@@ -1,0 +1,83 @@
+{
+  "id": "zhs-browser",
+  "name": "智慧树浏览器通道（CDP + OCS DOM 知识，读侧与答题主力）",
+  "kind": "browser",
+  "platform": "zhihuishu",
+  "enabled": true,
+  "priority": 10,
+  "page_scope": [
+    "studyvideoh5.zhihuishu.com",
+    "studyplush5.zhihuishu.com",
+    "fusioncourseh5.zhihuishu.com",
+    "studywisdomh5.zhihuishu.com",
+    "wisdom-mooc.zhihuishu.com",
+    "smartcoursestudent.zhihuishu.com",
+    "ai-smart-course-student-pro.zhihuishu.com",
+    "onlineweb.zhihuishu.com"
+  ],
+  "upstream": {
+    "repo": "https://github.com/ocsjs/ocsjs",
+    "path": "upstreams/ocsjs",
+    "pinned_commit": "890686a5e54f9a6d52d1169bae9ea5971e0863c7",
+    "license": "MIT",
+    "isolation": "browser",
+    "note": "MIT 允许复制。本项目复制其 packages/scripts/src/projects/zhs.ts 的**选择器常量与页面分类知识**到 orchestrator/adapters/zhs_dom.py（保留版权声明）。OCS 本体是 Vite 构建的用户脚本，无法 subprocess 驱动，故「取知识、不取程序」；运行由本项目自建的 CDP 通道承担。"
+  },
+  "runtime": {
+    "language": "python",
+    "version": ">=3.11",
+    "entry": "orchestrator.adapters.zhs_browser:ZhsBrowserAdapter",
+    "requires": "无第三方依赖（CDP 客户端为手写，见 orchestrator/cdp.py）"
+  },
+  "capabilities": {
+    "C06": { "level": "full", "op": "detect_page", "note": "在已登录页面里读课程名与当前导航" },
+    "C07": { "level": "full", "op": "detect_page" },
+    "C08": { "level": "full", "op": "scan_tasks", "note": "6 种学习页布局的章节/任务点读取" },
+    "C09": { "level": "partial", "op": "scan_tasks", "note": "经典/新共享/AI助教/新智慧 四类已摸清完成标记；新形态课程与 wisdom-mooc 的嵌套任务点尚未实测" },
+    "C10": { "level": "partial", "op": "progress", "note": "读 video 元素与页面进度点；平台进度以页面显示为准" },
+    "C11": { "level": "partial", "op": "progress", "note": "需逐课遍历，未做批量聚合" },
+    "C12": { "level": "partial", "op": "play", "note": "能在浏览器内启动播放与调倍速；长时间连续播放交给 zhs-autovisor" },
+    "C13": { "level": "none", "note": "未见智慧树纯音频任务形态" },
+    "C14": { "level": "partial", "op": "scan_tasks", "note": "新形态课程资源盘点；只读" },
+    "C15": { "level": "none" },
+    "C16": { "level": "none", "note": "直播任务不覆盖" },
+    "C17": { "level": "none", "note": "讨论/互动不覆盖" },
+    "C18": { "level": "full", "op": "next_task", "note": "按页面布局找当前项的下一个任务点并点击" },
+    "C19": { "level": "partial", "note": "未开放任务点由统一层策略处理" },
+    "C20": { "level": "full", "op": "set_speed", "params": ["speed"], "max": 1.8, "note": "平台硬上限 1.8，超出自动夹紧并写 warning" },
+    "C22": { "level": "partial", "note": "本地题库 + 模糊匹配（思路参考上游，代码自研）" },
+    "C23": { "level": "full", "note": "经 Agent 链路（C43→C44）完成" },
+    "C24": { "level": "none", "note": "显式声明不支持图片题 —— 比省略更有价值，Router 可据此换 Adapter" },
+    "C25": { "level": "none", "note": "智慧树未见字体反爬（那是学习通的坑）" },
+    "C26": { "level": "full", "op": "answer_quiz", "note": "章节测验/练习；写操作受 safety 守卫" },
+    "C27": { "level": "partial", "note": "默认只保存不提交，需显式开启" },
+    "C28": { "level": "partial" },
+    "C29": { "level": "partial", "op": "scan_tasks", "note": "在作业页面读条目；仅共享课作业" },
+    "C30": { "level": "partial", "op": "detect_page", "note": "**只读**：可以读考试信息，绝不自动作答（目标 5）" },
+    "C32": { "level": "partial", "op": "scan_tasks", "note": "新形态课程资源盘点（只读）" },
+    "C34": { "level": "full" },
+    "C37": { "level": "full" },
+    "C38": { "level": "full", "note": "浏览器自动化：CDP 手写客户端 + 独立 profile 隔离" },
+    "C40": { "level": "full" },
+    "C41": { "level": "full" },
+    "C42": { "level": "full" },
+    "C43": { "level": "full", "op": "read_question", "note": "读弹题题干与选项，结构化导出" },
+    "C44": { "level": "full", "op": "submit_answers", "note": "按答案下标注入页面并提交" },
+    "C45": { "level": "full", "op": "answer_loop", "note": "读-答-注入循环，超时默认转人工而非随机作答" },
+    "C46": { "level": "full", "note": "统一层 openai_shim，与平台无关" },
+    "C47": { "level": "full", "note": "统一层 answer_broker 工单队列" }
+  },
+  "health": {
+    "probe": {
+      "method": "cdp_probe",
+      "timeout_ms": 15000,
+      "note": "探测 CDP 端点是否在线并读取当前页；无副作用，不点击任何元素"
+    },
+    "degrade_on": ["platform_changed", "risk_control"]
+  },
+  "limits": {
+    "max_concurrency": 1,
+    "min_interval_ms": 2000,
+    "note": "与 zhs-autovisor 互斥：两者都会驱动浏览器，同时跑会互相干扰"
+  }
+}

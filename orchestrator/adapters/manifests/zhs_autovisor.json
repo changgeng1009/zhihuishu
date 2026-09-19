@@ -1,0 +1,80 @@
+{
+  "id": "zhs-autovisor",
+  "name": "CXRunfree/Autovisor Adapter（视频写侧主力）",
+  "kind": "subprocess",
+  "platform": "zhihuishu",
+  "enabled": true,
+  "priority": 20,
+  "page_scope": [
+    "studyvideoh5.zhihuishu.com",
+    "studyplush5.zhihuishu.com",
+    "fusioncourseh5.zhihuishu.com",
+    "studywisdomh5.zhihuishu.com",
+    "wisdom-mooc.zhihuishu.com"
+  ],
+  "upstream": {
+    "repo": "https://github.com/CXRunfree/Autovisor",
+    "path": "upstreams/Autovisor",
+    "pinned_commit": "40988f393f38881e86f5a32e46d8d93dc849155e",
+    "license": "MIT",
+    "isolation": "process",
+    "note": "MIT：subprocess + 配置走 --config 指向**账号工作区**，upstreams/ 零改动（红线 R2）。上游自带浏览器启动逻辑，故与 zhs-browser 互斥（limits.max_concurrency=1）。"
+  },
+  "runtime": {
+    "language": "python",
+    "version": ">=3.10,<3.14",
+    "install": "python -m pip install httpx pillow playwright requests pygetwindow",
+    "entry": "Autovisor.py",
+    "python_from": "ZHS_PYTHON 环境变量 → 项目 .venv → 当前解释器"
+  },
+  "capabilities": {
+    "C01": { "level": "partial", "op": "run_video", "note": "账密登录；验证码/人脸需人工" },
+    "C02": { "level": "full", "op": "ping", "note": "上游维护 data/cookies.json；本项目另有三格式落盘" },
+    "C03": { "level": "partial", "op": "ping", "note": "重登一次，再失败转 needs_manual_action" },
+    "C05": { "level": "partial", "op": "run_video", "note": "仅滑块（modules/slider.py）；点选/人脸不覆盖" },
+    "C12": {
+      "level": "full",
+      "op": "run_video",
+      "params": ["speed", "limit_min", "course_url", "sound_off"],
+      "note": "上游已覆盖：新版目录/翻转课/旧版课程识别、进度检测与回退重试、进度停滞自动停止、安全验证与课中弹题期间暂停"
+    },
+    "C13": { "level": "none" },
+    "C14": { "level": "none", "note": "阅读类不在上游范围" },
+    "C15": { "level": "none" },
+    "C16": { "level": "none" },
+    "C17": { "level": "none" },
+    "C18": {
+      "level": "full",
+      "op": "run_video",
+      "note": "上游 modules/lesson_navigation.py 自动切章；本项目再叠加任务点级断点"
+    },
+    "C19": { "level": "partial", "params": ["notopen_action"], "enum": ["retry", "ask", "continue"] },
+    "C20": { "level": "full", "op": "run_video", "params": ["speed"], "max": 1.8, "note": "config.ini limitSpeed，平台上限 1.8" },
+    "C24": { "level": "none", "note": "显式声明不支持图片题" },
+    "C25": { "level": "none" },
+    "C26": { "level": "none", "note": "上游不覆盖章节测验" },
+    "C30": { "level": "none", "note": "**不读取、不操作任何考试页面**（安全红线，目标 5）" },
+    "C34": { "level": "full", "note": "上游自带 CLI：--check-browser / --check-course / --import-cookies" },
+    "C37": { "level": "full" },
+    "C40": { "level": "partial", "note": "协作式取消置标志，worker 在下一行输出时退出" },
+    "C41": { "level": "full" },
+    "C42": { "level": "full", "note": "worker 解析 stdout 的风控特征并上报统一层" },
+    "C43": {
+      "level": "partial",
+      "note": "⚠️ 只能**检测到**课中弹题弹窗（上游会在弹题期间暂停播放），读不到结构化题干 → 弹题作答必须走 zhs-browser 的 Agent 链路"
+    }
+  },
+  "health": {
+    "probe": {
+      "method": "worker_ping",
+      "timeout_ms": 30000,
+      "note": "仅检查上游入口存在与依赖可 import；**不启动浏览器**（启动浏览器有副作用且慢）"
+    },
+    "degrade_on": ["platform_changed", "risk_control"]
+  },
+  "limits": {
+    "max_concurrency": 1,
+    "min_interval_ms": 3000,
+    "note": "账号级串行。上游会自行启动浏览器实例，并发会互相抢账号会话"
+  }
+}

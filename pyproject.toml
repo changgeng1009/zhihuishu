@@ -1,10 +1,10 @@
 [project]
-name = "chaoxing-orchestrator"
+name = "zhihuishu-orchestrator"
 version = "0.1.0"
-description = "学习通自动化能力平台：把多个独立第三方学习通工具统一成可被 Agent / MCP Client 调用的能力层"
+description = "智慧树自动化能力平台：把多个独立第三方智慧树工具统一成可被 Agent / MCP Client 调用的能力层"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "Proprietary" }
+license = { text = "MIT" }
 
 # 零第三方依赖是有意的：统一层要保持可审计、可离线自证。
 # 上游项目（GPL-3.0 等）的依赖属于各自 workdir，不进入本包。
