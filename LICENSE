@@ -1,0 +1,37 @@
+MIT License
+
+Copyright (c) 2026 changgeng1009
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+## 第三方代码声明
+
+本项目通过进程 / 浏览器 / 文件边界调用若干独立开源项目，并复制了其中
+**一个** 项目（MIT 许可）的部分知识。各上游的版权归其原作者所有：
+
+| 项目 | 许可证 | 本项目如何使用 | 版权声明位置 |
+|---|---|---|---|
+| [ocsjs/ocsjs](https://github.com/ocsjs/ocsjs) | MIT (c) 2022 enncy | **复制**其智慧树页面选择器与弹题弹窗结构知识 | `orchestrator/adapters/zhs_dom.py` 文件头 |
+| [CXRunfree/Autovisor](https://github.com/CXRunfree/Autovisor) | MIT (c) 2024 PengChengxu | 子进程调用，未复制代码 | — |
+| [Cooanyh/zhihuishu-zhangwodu](https://github.com/Cooanyh/zhihuishu-zhangwodu) | CC BY-NC-SA 4.0 | **仅只读参考**，未复制任何代码 | — |
+| [Finn-Holmes/zhihuishu-resource-helper](https://github.com/Finn-Holmes/zhihuishu-resource-helper) | 无 LICENSE（保留所有权利） | **仅只读参考**，未复制任何代码 | — |
+
+完整的联系方式、锁定的 commit 与隔离理由见 `upstreams.lock.json`。

@@ -1,0 +1,68 @@
+{
+  "_doc": "上游快照锁文件。upstreams/ 整体被 .gitignore 排除（红线 R2：只读、不修改、可随时按 commit 重拉）。本文件入库，保证任何机器都能复现出完全相同的上游版本。",
+  "generated_at": "2026-09-19T16:10:00+08:00",
+  "clone_mode": "git clone --depth 1（浅克隆；pinned_commit 即当前 HEAD）",
+  "verify": "详见 docs/03 §7；`python -m orchestrator.cli upstreams` 可复核",
+  "upstreams": [
+    {
+      "id": "ocsjs",
+      "name": "OCS 网课助手",
+      "repo": "https://github.com/ocsjs/ocsjs",
+      "path": "upstreams/ocsjs",
+      "pinned_commit": "890686a5e54f9a6d52d1169bae9ea5971e0863c7",
+      "license": "MIT",
+      "license_file": "upstreams/ocsjs/LICENSE",
+      "form": "pnpm monorepo（TypeScript，浏览器用户脚本框架）",
+      "isolation": "browser",
+      "role": "视频播放 / 章节切换 / 进度检测 / 弹题检测（DOM 知识来源）",
+      "entry": "packages/scripts/src/projects/zhs.ts（3620 行，智慧树全量实现）",
+      "contact": "MIT 允许复制与修改。本项目复制其 zhs.ts 的**选择器常量与页面分类知识**（见 orchestrator/adapters/zhs_dom.py），保留版权声明。",
+      "note": "OCS 本体是用户脚本，需构建 + 用户脚本管理器才能运行，不适合直接 subprocess。故取其 DOM 知识，运行由本项目自建的浏览器通道承担。"
+    },
+    {
+      "id": "Autovisor",
+      "name": "Autovisor",
+      "repo": "https://github.com/CXRunfree/Autovisor",
+      "path": "upstreams/Autovisor",
+      "pinned_commit": "40988f393f38881e86f5a32e46d8d93dc849155e",
+      "license": "MIT",
+      "license_file": "upstreams/Autovisor/LICENSE",
+      "form": "Python 3.10–3.13 + Playwright 独立程序",
+      "isolation": "process",
+      "role": "视频播放与课程兼容性的备用实现（写侧主力）",
+      "entry": "Autovisor.py（config.ini 驱动）；modules/course_runner.run_course()；modules/tasks.play_video()",
+      "contact": "MIT 允许 subprocess。通过生成 config.ini 到账号工作区 + 子进程调用，**不修改 upstreams/**（红线 R2）。",
+      "note": "已覆盖：新版目录/翻转课/旧版课程识别、进度检测与回退重试、进度停滞自动停止、安全验证与课中弹题期间暂停、只读诊断 --check-browser/--check-course。弹题只暂停不作答 → 作答由本项目自建通道补齐。"
+    },
+    {
+      "id": "zhihuishu-zhangwodu",
+      "name": "知到智慧树掌握度答题",
+      "repo": "https://github.com/Cooanyh/zhihuishu-zhangwodu",
+      "path": "upstreams/zhihuishu-zhangwodu",
+      "pinned_commit": "034d0845fc5dec669249cd2486fb69710370a49f",
+      "license": "CC-BY-NC-SA-4.0",
+      "license_file": "upstreams/zhihuishu-zhangwodu/LICENSE",
+      "form": "单文件用户脚本（zhihuishu-zhangwodu.user.js）",
+      "isolation": "reference-only",
+      "role": "掌握度 / 普通练习 / AI 自动答题（页面流程与选择器参考）",
+      "entry": "@match studywisdomh5 / wisdom-mooc 的 /study* /exam* /pointOfMastery*",
+      "contact": "⚠️ **不复制、不打包、不 subprocess**。CC BY-NC-SA 4.0 的 NC 限制商用、SA 具有传染性，纳入会污染整个仓库的许可。**仅作只读参考**：读它来理解掌握度页面的任务发现与翻页流程，用本项目自己的代码实现。",
+      "note": "提供的关键知识：①任务发现规则（默认只做灰色未完成，可选红色薄弱点）；②按页翻页直到提交；③题库 Levenshtein 90% 模糊匹配优先、未命中回落 AI；④多页布局适配 /study/mastery 与 /study/analysis。"
+    },
+    {
+      "id": "zhihuishu-resource-helper",
+      "name": "智慧树新形态课程 · 学习资源逐个打开",
+      "repo": "https://github.com/Finn-Holmes/zhihuishu-resource-helper",
+      "path": "upstreams/zhihuishu-resource-helper",
+      "pinned_commit": "8ae6720830c183869c188fd0eb8308f7985094e0",
+      "license": "NOASSERTION",
+      "license_file": null,
+      "form": "单文件用户脚本（zhihuishu-open-resources.user.js）",
+      "isolation": "reference-only",
+      "role": "新形态课程（ai-smart-course-student-pro）课件与资源页面参考",
+      "entry": "@match ai-smart-course-student-pro.zhihuishu.com",
+      "contact": "⚠️ **仓库内无 LICENSE 文件 → 按著作权法默认『保留所有权利』处理**。在取得作者授权前，**不复制任何代码**；仅作只读参考，用于理解新形态课程的 DOM 结构（见下）。",
+      "note": "参考其选择器约定：.section-item-collapse-info（知识点）/ .section-item-collapse-title .title-text / #middle-section-id .point-title-text / .resources-section / .basic-info-video-card-container / h5.video-title。本项目只把这些**页面事实**记录下来，代码自行实现。"
+    }
+  ]
+}
