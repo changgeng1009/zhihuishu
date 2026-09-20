@@ -87,18 +87,39 @@ POPUP_JS = r"""JSON.stringify((() => {
 
 #: 弹题内选项坐标（可见的 A/B/C/D 项）
 OPTIONS_JS = r"""JSON.stringify((() => {
+  // 只在弹窗根节点内找选项。曾因全文档扫描把侧栏标签「AI助教」误吞成
+  // 选项 A（^([A-D]) 吃掉首字母），导致工单选项错、答案点不中。
+  const root = document.querySelector('.ai-test-question-wrapper')
+            || document.querySelector('#playTopic-dialog')
+            || document.querySelector('.ai-class-exercise-dialog');
+  if (!root) return [];
   const vis = (el) => { const r = el.getClientRects(); return r.length > 0; };
+  const box = (el) => { const r = el.getBoundingClientRect();
+    return {x: Math.round(r.x + Math.min(r.width / 2, 60)), y: Math.round(r.y + r.height / 2)}; };
   const out = [];
-  for (const el of document.querySelectorAll('li, label, div, p, span')) {
+  // 形态一：字母+文本在同一叶子（旧共享课弹题）
+  for (const el of root.querySelectorAll('li, label, div, p, span')) {
     if (el.children.length) continue;
     const t = (el.textContent || '').trim();
     const m = t.match(/^([A-D])\s*[.、．:：]?\s*(.+)$/);
-    if (!m) continue;
-    if (!vis(el)) continue;
+    if (!m || m[2].length < 1 || !vis(el)) continue;
     const r = el.getBoundingClientRect();
     if (r.width < 5 || r.height < 5) continue;
-    out.push({letter: m[1], text: m[2].slice(0, 60),
-              x: Math.round(r.x + Math.min(r.width / 2, 60)), y: Math.round(r.y + r.height / 2)});
+    out.push({letter: m[1], text: m[2].slice(0, 60), ...box(el)});
+  }
+  if (out.length) return out;
+  // 形态二：字母与文本是分离叶子（AI 随堂练习：[class*=select] + .answer 同行）
+  for (const el of root.querySelectorAll('[class*=select]')) {
+    if (el.children.length || !vis(el)) continue;
+    const t = (el.textContent || '').trim();
+    if (!/^[A-D]$/.test(t)) continue;
+    let text = "";
+    const row = el.parentElement;
+    if (row) {
+      const ans = row.querySelector('.answer, [class*=answer]');
+      text = ans ? (ans.textContent || '').trim() : "";
+    }
+    out.push({letter: t, text: text.slice(0, 60), ...box(el)});
   }
   return out;
 })())"""
