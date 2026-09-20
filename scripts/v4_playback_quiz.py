@@ -174,7 +174,7 @@ def set_speed_via_ui(page) -> str:
       for (const el of document.querySelectorAll('span,div,li')) {
         if (el.children.length) continue;
         const t = (el.textContent||'').replace(/\s+/g,'').toUpperCase();
-        if (!/^(X)?1\.0(X)?$/.test(t)) continue;
+        if (!/^X?\d\.\d{1,2}X?$/.test(t)) continue;   // 当前倍率标签（X 1.0 / X 1.5…）
         const r = el.getBoundingClientRect();
         if (r.width < 5 || r.x < v.x || r.x > v.x + v.width) continue;
         if (r.y < v.y + v.height - 100 || r.y > v.y + v.height + 30) continue;
