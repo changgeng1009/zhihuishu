@@ -190,7 +190,7 @@ def set_speed_via_ui(page) -> str:
     item = page.eval(r"""JSON.stringify((() => {
       const v = document.querySelector('video').getBoundingClientRect();
       for (const el of document.querySelectorAll('span,div,li')) {
-        if (el.children.length) return null;
+        if (el.children.length) continue;
         const t = (el.textContent||'').replace(/\s+/g,'').toUpperCase();
         if (!/^X?1\.5X?$/.test(t)) continue;
         const r = el.getBoundingClientRect();
@@ -210,7 +210,7 @@ def set_speed_via_ui(page) -> str:
     return f"1.5x 结果: rate={v.get('rate')}"
 
 
-def handle_popup(page, ticket_dir: Path, wait_answer_s: float = 90.0) -> str:
+def handle_popup(page, ticket_dir: Path, wait_answer_s: float = 300.0) -> str:
     """提取弹题 → 写工单 → 等 Agent 答案 → 真实点击提交。"""
     raw = page.eval(POPUP_JS, wait=False)
     popup = json.loads(raw) if isinstance(raw, str) else raw
@@ -259,7 +259,7 @@ def handle_popup(page, ticket_dir: Path, wait_answer_s: float = 90.0) -> str:
         if v and not v.get("paused"):
             page.eval("document.querySelector('video').pause()", wait=False)
         pending.rename(ticket_dir / f"timeout_{ticket_id}.json")
-        print("[quiz] 90s 未获答案 → 已暂停视频，转人工", flush=True)
+        print(f"[quiz] {wait_answer_s}s 未获答案 → 已暂停视频，转人工", flush=True)
         return "timeout"
 
     letters = [a.strip().upper() for a in re.split(r"[,\s，、]+", str(ans.get("answer", ""))) if a.strip()]
@@ -312,6 +312,7 @@ def handle_popup(page, ticket_dir: Path, wait_answer_s: float = 90.0) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit-min", type=int, default=15, help="总运行时长上限")
+    ap.add_argument("--wait-answer", type=int, default=300, help="工单等待 Agent 作答的秒数")
     ap.add_argument("--speed", action="store_true", help="尝试通过真实 UI 设 1.5 倍速")
     ap.add_argument("--visible", action="store_true",
                     help="窗口显示在屏幕上（默认 offscreen；需要人工点弹窗时用）")
@@ -386,7 +387,7 @@ def main() -> int:
                 print(f"[tick] cur={v['cur']:.0f}/{v['dur']:.0f}s paused={v['paused']}", flush=True)
             if v.get("cur", 0) > 3:
                 # 弹题会主动暂停视频，所以不能以 paused 为前提过滤
-                r = handle_popup(page, ANSWER_DIR)
+                r = handle_popup(page, ANSWER_DIR, wait_answer_s=args.wait_answer)
                 if r.startswith("answered"):
                     handled += 1
                     print(f"[quiz] 第 {handled} 题处理完成", flush=True)
