@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -80,40 +81,81 @@ def enumerate_tasks(page) -> list[dict]:
     return list(seen.values())
 
 
-def play_one(page, task: dict, wait_answer_s: int) -> str:
-    """播一个任务点到结束。返回 ok / timeout。"""
-    # 列表可能滚走了：滚回该条目可见处再点
-    page.eval(r"""(() => {
-      const el = [...document.querySelectorAll('.child-info.hasvideo')]
-        .find(e => (e.textContent||'').replace(/\s+/g,' ').trim()
-                   .startsWith(__TASK__.t.slice(0, 12)));
-      if (el) el.scrollIntoView({block: 'center'});
-    })()""".replace("__TASK__.t.slice(0, 12)", json.dumps(task["t"][:12])), wait=False)
-    time.sleep(0.6)
-    fresh = page.eval(r"""JSON.stringify((() => {
-      const el = [...document.querySelectorAll('.child-info.hasvideo')]
-        .find(e => (e.textContent||'').replace(/\s+/g,' ').trim()
-                   .startsWith(T.slice(0, 12)));
-      if (!el) return null;
-      const r = el.getBoundingClientRect();
-      return {x: Math.round(r.x + Math.min(r.width/2, 90)), y: Math.round(r.y + r.height/2)};
-    })())""".replace("T.slice(0, 12)", json.dumps(task["t"][:12])), wait=False)
-    fresh = json.loads(fresh) if isinstance(fresh, str) else fresh
-    if not fresh:
-        return "skip"
-    click(page, fresh["x"], fresh["y"])
+def _expected_dur(title: str) -> float | None:
+    """从条目文本解析时长「00:14:26」→ 秒。用于校验视频真的切换了。"""
+    m = re.search(r"(\d{1,2}):(\d{2}):(\d{2})", title)
+    if not m:
+        m = re.search(r"(\d{1,2}):(\d{2})", title)
+        if not m:
+            return None
+        return int(m.group(1)) * 60 + int(m.group(2))
+    return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
 
-    v = None
-    for _ in range(40):
-        time.sleep(2)
-        v = video_state(page)
-        if v and v.get("dur"):
+
+def _task_coords(page, title12: str) -> dict | None:
+    """滚动到条目可见处，返回可点坐标（须在视口内）。"""
+    page.eval(
+        "(() => { const el = [...document.querySelectorAll('.child-info.hasvideo')]"
+        ".find(e => (e.textContent||'').replace(/\\s+/g,' ').trim().startsWith(T));"
+        "if (el) el.scrollIntoView({block: 'center'}); })()".replace(
+            "T", json.dumps(title12), 1),
+        wait=False,
+    )
+    time.sleep(0.7)
+    raw = page.eval(
+        r"""JSON.stringify((() => {
+      const el = [...document.querySelectorAll('.child-info.hasvideo')]
+        .find(e => (e.textContent||'').replace(/\s+/g,' ').trim().startsWith(T));
+      if (!el) return null;
+      const target = el.firstElementChild || el;   // 实测点内层才生效
+      const r = target.getBoundingClientRect();
+      if (r.y < 0 || r.y > innerHeight - 10 || r.width < 5) return null;  // 视口外
+      return {x: Math.round(r.x + Math.min(r.width/2, 90)), y: Math.round(r.y + r.height/2)};
+    })())""".replace("T)", json.dumps(title12) + ")", 1).replace(
+            "T)", json.dumps(title12) + ")", 1),
+        wait=False,
+    )
+    return json.loads(raw) if isinstance(raw, str) else raw
+
+
+def play_one(page, task: dict, wait_answer_s: int, prev_dur: float | None) -> tuple[str, float | None]:
+    """播一个任务点到结束。返回 (ok/timeout/skip, 当前视频时长)。"""
+    expected = _expected_dur(task["t"])
+    title12 = task["t"][:12]
+
+    # 点开并确认视频真的切换了（dur ≈ 条目时长；或 dur 变化 / cur 归零）
+    v = video_state(page) or {}
+    loaded = False
+    for attempt in range(3):
+        coords = _task_coords(page, title12)
+        if not coords:
+            time.sleep(2)
+            continue
+        click(page, coords["x"], coords["y"])
+        for _ in range(20):                       # 最多 40s 等 loader
+            time.sleep(2)
+            v = video_state(page)
+            if not v or not v.get("dur"):
+                continue
+            dur, cur = v.get("dur"), v.get("cur", 0)
+            if expected and abs(dur - expected) < 6:
+                loaded = True
+                break
+            if not expected and (prev_dur is None or abs(dur - prev_dur) > 6 or cur < 30):
+                loaded = True
+                break
+        if loaded:
             break
-    if not (v and v.get("dur")):
-        return "skip"
+        print(f"    [warn] 第 {attempt+1} 次点击后视频未切换（dur={v.get('dur')}）", flush=True)
+    if not loaded:
+        return "skip", v.get("dur") if v else prev_dur
+
     page.eval("document.querySelector('video').muted = true", wait=False)
     print(f"    [play] dur={v['dur']:.0f}s cur={v['cur']:.0f}s（已静音）", flush=True)
-    if v.get("cur", 0) < v["dur"] - 5:            # 从头看的才设倍速
+    if v.get("cur", 0) >= v["dur"] - 10:
+        return "ok", v["dur"]                      # 播放器续在末尾 = 之前已看完
+
+    if v.get("cur", 0) < v["dur"] - 5:             # 从头看的才设倍速
         print("    [speed]", set_speed_via_ui(page), flush=True)
 
     # 播放到结束；弹题工单制
@@ -121,12 +163,12 @@ def play_one(page, task: dict, wait_answer_s: int) -> str:
         time.sleep(3)
         v = video_state(page)
         if not v:
-            return "ok"                            # 播完元素销毁
+            return "ok", v["dur"] if v else None   # 播完元素销毁
         if v.get("dur") and v.get("cur", 0) >= v["dur"] - 1.5:
-            return "ok"
+            return "ok", v["dur"]
         r = handle_popup(page, ANSWER_DIR, wait_answer_s=wait_answer_s)
         if r == "timeout":
-            return "timeout"
+            return "timeout", v.get("dur")
         if r.startswith("answered"):
             print(f"    [quiz] 已答 {r.split(' ', 1)[1]}", flush=True)
             # 面板关闭 + 恢复播放
@@ -184,12 +226,13 @@ def main() -> int:
         print(f"[batch] 视频任务点 {len(tasks)} 个", flush=True)
         t0 = time.time()
         done = 0
+        prev_dur: float | None = None
         for i, task in enumerate(tasks):
             if time.time() - t0 > args.limit_min * 60:
                 print(f"[batch] 到达时限，已完成 {done}", flush=True)
                 break
             print(f"[batch] ({i+1}/{len(tasks)}) {task['t'][:36]}", flush=True)
-            r = play_one(page, task, args.wait_answer)
+            r, prev_dur = play_one(page, task, args.wait_answer, prev_dur)
             if r == "timeout":
                 print("[batch] 弹题超时转人工，批量停止", flush=True)
                 return 2
