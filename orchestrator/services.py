@@ -116,6 +116,10 @@ COMMANDS: dict[str, CommandSpec] = {
     "cookies": CommandSpec("cookies", None, "cookie", "查看已落盘的 cookie 与体检报告"),
     "cookies_import": CommandSpec("cookies_import", None, "cookie", "从字符串/文件导入 cookie"),
     "cookies_extract": CommandSpec("cookies_extract", None, "cookie", "通过 CDP 从独立浏览器提取 cookie"),
+    "cookies_restore": CommandSpec(
+        "cookies_restore", None, "cookie",
+        "把已落盘 cookie 灌回独立浏览器（浏览器重开后免扫码恢复登录）",
+    ),
     "cookies_clear": CommandSpec("cookies_clear", None, "cookie", "清除已落盘的 cookie"),
     "cookies_login": CommandSpec(
         "cookies_login", None, "cookie",
@@ -1199,6 +1203,11 @@ class Orchestrator:
                 request_id, params, account_id, started, logger
             )
 
+        if command == "cookies_restore":
+            return self._cookies_restore(
+                request_id, params, account_id, started, logger
+            )
+
         if command == "cookies_login":
             return self._cookies_login(
                 request_id, params, account_id, started, logger
@@ -1383,6 +1392,90 @@ class Orchestrator:
         return self._finish(
             request_id, "cookies_extract", account_id, started, logger, ok=True,
             state=TaskState.COMPLETED, data={**saved, "port": port}, warnings=warnings,
+        )
+
+    def _cookies_restore(
+        self,
+        request_id: str,
+        params: dict[str, Any],
+        account_id: str,
+        started: Any,
+        logger: StructuredLogger,
+    ) -> Envelope:
+        """把已落盘的 cookie 灌回独立浏览器（cookies_extract 的逆操作）。
+
+        场景：登录会话 cookie 是会话型，浏览器一关就蒸发；重开浏览器被
+        踢回登录页时，用它把磁盘上的会话恢复回来，**不用重新扫码**。
+        """
+        from . import browser as browser_mod
+        from . import cdp as cdp_mod
+
+        port = int(params.get("port") or browser_mod.debug_port())
+
+        jar = self.cookie_store.load(account_id)
+        if jar is None:
+            return self._finish(
+                request_id, "cookies_restore", account_id, started, logger, ok=False,
+                error=AdapterError(
+                    code=Codes.INVALID_PARAM,
+                    category=ErrorCategory.INPUT,
+                    message=f"账号 {account_id} 没有已落盘的 cookie（先 cookies_extract）",
+                ),
+            )
+
+        # 只灌智慧树域，避免把无关 cookie 塞进浏览器
+        from .cookies import ZHS_DOMAIN_SUFFIXES
+
+        target = [
+            c.to_dict() if hasattr(c, "to_dict") else dict(c)
+            for c in jar
+            if any(str(c.domain).endswith(s) or str(c.domain).lstrip(".") == s
+                   for s in ZHS_DOMAIN_SUFFIXES)
+        ] or [dict(c) for c in jar]
+
+        try:
+            ok_count, errors = cdp_mod.set_all_cookies(port, target)
+        except CdpError as exc:
+            return self._finish(
+                request_id, "cookies_restore", account_id, started, logger, ok=False,
+                error=AdapterError(
+                    code=Codes.ADAPTER_NOT_READY,
+                    category=ErrorCategory.NOT_SUPPORTED,
+                    message=f"无法通过 CDP 连接独立浏览器（端口 {port}）：{exc}",
+                ),
+                next_actions=[
+                    "先启动独立浏览器：python -m orchestrator.browser --launch --minimized",
+                    "启动后重新执行本命令",
+                ],
+            )
+
+        logger.emit(
+            Event.REQUEST_RECEIVED,
+            action="cookies_restore",
+            port=port,
+            total=len(target),
+            restored=ok_count,
+        )
+        warnings: list[str] = []
+        if errors:
+            warnings.append(f"{len(errors)} 条写入失败：{errors[:3]}")
+        if ok_count == 0:
+            return self._finish(
+                request_id, "cookies_restore", account_id, started, logger, ok=False,
+                error=AdapterError(
+                    code=Codes.ADAPTER_NOT_READY,
+                    category=ErrorCategory.PLATFORM_CHANGED,
+                    message="0 条 cookie 写入成功，CDP 拒收了全部记录",
+                ),
+            )
+        return self._finish(
+            request_id, "cookies_restore", account_id, started, logger, ok=True,
+            state=TaskState.COMPLETED,
+            data={"port": port, "total": len(target), "restored": ok_count},
+            warnings=warnings,
+            next_actions=[
+                "会话已恢复。导航到学习页即可继续：zhs list_courses",
+            ],
         )
 
     def _cookies_login(

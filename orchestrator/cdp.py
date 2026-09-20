@@ -410,6 +410,73 @@ def get_all_cookies(port: int, timeout_s: float = 15.0) -> list[dict[str, Any]]:
     return [c for c in cookies if isinstance(c, dict)]
 
 
+#: 内部 same_site 记法 → CDP `Network.setCookie` 接受的值
+_SAME_SITE_CDP = {"Strict": "Strict", "Lax": "Lax", "None": "None", "no_restriction": "None"}
+
+
+def set_all_cookies(
+    port: int,
+    cookies: Iterable[dict[str, Any]],
+    timeout_s: float = 20.0,
+) -> tuple[int, list[str]]:
+    """把一批 cookie 灌回浏览器（`Network.setCookie` 逐条）。
+
+    ## 为什么需要这个能力
+
+    登录会话 cookie 通常是**会话型**（`expires <= 0`），Chromium 关闭时
+    **不把会话 cookie 写盘**。于是出现一个经典陷阱：用户关掉独立浏览器
+    → 重新打开 → 平台踢回登录页，看起来像"登录丢了"，实际磁盘上的
+    cookies.json 里好好的 —— 只是没有人负责把它灌回去。本函数就是那个人。
+
+    字段映射（内部 snake_case → CDP）：
+        http_only → httpOnly
+        same_site → sameSite（只接受 Strict/Lax/None；空值省略）
+        expires <= 0 → 会话 cookie，**省略 expires**（带负数会被当成已过期）
+
+    :returns: (成功写入条数, 失败原因列表)
+    """
+    target = pick_page_target(port, timeout_s)
+    ok_count = 0
+    errors: list[str] = []
+    with CdpClient(str(target["webSocketDebuggerUrl"]), timeout_s) as client:
+        for c in cookies:
+            params: dict[str, Any] = {
+                "name": str(c.get("name", "")),
+                "value": str(c.get("value", "")),
+                "domain": str(c.get("domain", "")),
+                "path": str(c.get("path", "/")) or "/",
+                "secure": bool(c.get("secure", False)),
+            }
+            if not params["name"] or not params["domain"]:
+                errors.append(f"跳过缺 name/domain 的记录：{c!r:.80}")
+                continue
+            if c.get("httpOnly") or c.get("http_only"):
+                params["httpOnly"] = True
+            same_site = str(c.get("sameSite", c.get("same_site", "")) or "")
+            cdp_site = _SAME_SITE_CDP.get(same_site)
+            if cdp_site:
+                params["sameSite"] = cdp_site
+            expires = c.get("expires")
+            try:
+                expires_f = float(expires) if expires is not None else -1.0
+            except (TypeError, ValueError):
+                expires_f = -1.0
+            if expires_f > 0:
+                params["expires"] = expires_f
+            # 有 domain 时 url 仍必填（CDP 校验用），给个对应 scheme 的占位
+            params["url"] = f"http{'s' if params['secure'] else ''}://{params['domain']}{params['path']}"
+            try:
+                result = client.call("Network.setCookie", params)
+            except CdpError as exc:
+                errors.append(f"{params['name']}: {exc}")
+                continue
+            if result.get("success") is True or "success" not in result:
+                ok_count += 1
+            else:
+                errors.append(f"{params['name']}: 平台拒收")
+    return ok_count, errors
+
+
 def get_cookies_for(port: int, urls: Iterable[str], timeout_s: float = 15.0) -> list[dict[str, Any]]:
     """按 URL 过滤取 cookie（`Network.getCookies`）。"""
     url_list = list(urls)

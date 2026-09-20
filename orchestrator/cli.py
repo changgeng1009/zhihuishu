@@ -256,6 +256,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = add("cookies_extract", "通过 CDP 从独立浏览器实例提取 cookie")
     p.add_argument("--port", type=int, default=None, help="CDP 端口（默认 9333）")
     p.add_argument("--keep-all", action="store_true", help="保留非智慧树域名的 cookie")
+    p = add("cookies_restore", "把已落盘 cookie 灌回独立浏览器（重开浏览器后免扫码恢复登录）")
+    p.add_argument("--port", type=int, default=None, help="CDP 端口（默认 9333）")
     add("cookies_clear", "清除已落盘的 cookie 文件")
 
     p = add("cookies_login", "一站式登录：启动独立浏览器 → 等你登录 → 自动提取落盘")
