@@ -244,12 +244,23 @@ def find_browser() -> Path:
 #: 智慧树这类平台会对无头浏览器做指纹检测，而且视频播放/解码在 headless 下
 #: 行为不可控。下面两种模式对页面来说与"正常窗口"完全一样（同样的渲染管线、
 #: 同样的指纹），只是人看不见 —— 这是"要后台"与"要不被识别"的唯一两全解。
+#: 后台窗口的防节流旗标。Chromium 会把"不可见"的窗口判定为后台并节流其
+#: 媒体加载/定时器 —— 实测（2026-09-20）offscreen 窗口里视频源地址拿到了
+#: 但 MSE 缓冲永不推进（dur 恒 null），同一账号在可见窗口手动播放完全正常。
+#: 这三个旗标禁用三类节流，让后台窗口的页面行为与前台一致。
+ANTITHROTTLE_FLAGS: tuple[str, ...] = (
+    "--disable-backgrounding-occluded-windows",   # 禁止"被遮挡"节流
+    "--disable-renderer-backgrounding",           # 禁止渲染进程降级
+    "--disable-background-timer-throttling",      # 禁止后台定时器节流
+)
+
 BACKGROUND_MODES: dict[str, tuple[str, ...]] = {
     # 最小化到任务栏：进程照常渲染，点一下就能看
-    "minimized": ("--start-minimized",),
+    "minimized": ("--start-minimized", *ANTITHROTTLE_FLAGS),
     # 移出屏幕：完全不打扰当前桌面，但窗口"真实存在"
     # （-32000 是 Windows 允许的最小窗口坐标，任何屏幕都看不到它）
-    "offscreen": ("--window-position=-32000,-32000", "--window-size=1280,900"),
+    "offscreen": ("--window-position=-32000,-32000", "--window-size=1280,900",
+                  *ANTITHROTTLE_FLAGS),
 }
 
 
