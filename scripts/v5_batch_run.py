@@ -206,12 +206,26 @@ def _refresh_page(page) -> bool:
     return False
 
 
+def _unstick_ended_video(page) -> None:
+    """播放器停在 ended 态时，所有列表点击只挪高亮不加载（今日实测反复复现）。
+
+    标准播放器行为：ended 后 play() 会从头重播 —— 以真实播放解除卡死，
+    再点目标条目即可正常切换。平台心跳只计真实播放时长，无伪造。
+    """
+    page.eval(r"""(()=>{const v=document.querySelector('video');
+      if (v && v.duration && v.currentTime >= v.duration - 1.5 && v.ended !== undefined) {
+        v.currentTime = 0; v.play();
+      }})()""", wait=False)
+
+
 def _click_until_loaded(page, task: dict, prev_dur: float | None,
                         attempts: int = 3) -> tuple[bool, dict]:
     """按 part id 点击并等视频元数据切换。返回 (loaded, 最后一次 video_state)。"""
     expected = _expected_dur(task["t"])
     v: dict = {}
     for attempt in range(attempts):
+        _unstick_ended_video(page)     # ended 态会让点击失效，先解卡
+        time.sleep(1)
         _hide_noise(page)
         coords = _task_coords(page, task["id"])
         if not coords:
