@@ -1,12 +1,22 @@
 # -*- coding: utf-8 -*-
 """V5 批量跑课：枚举全部视频任务点，逐个播放到完（像 cx 的 run_chapter）。
 
+身份模型（2026-09-20 定稿）：
+  平台给每个任务条目稳定 id（DOM: <div class="child-info hasvideo" id="part1000129959">）。
+  定位、断点、完成证据全部用 part id —— 标题后缀（未练习/掌握度N%/免考）会漂移，
+  不能做身份。
+
+完成证据（平台侧）：
+  条目首子元素出现 .el-progress（Element-Plus 进度环），aria-valuenow = 观看百分比。
+  截图实证：0.1 完成态 = 绿色对勾；1.2.2 观看中 = 蓝色环。
+  aria-valuenow >= 100 才计 confirmed；其余一律待确认，绝不凭「播完」猜。
+
 流程（每个任务点）：
-  真实点击 → 等元数据 → 静音 → 真实 UI 设 1.5x → 循环监视：
-    - 弹题（handle_popup 工单制，Agent 作答；超时 240s → 暂停转人工并停止批量）
-    - 播完判定（cur >= dur - 1.5）→ 下一个
-全片结束或超时退出。断点：重启后从第一个"未练习"任务点继续（简化：全量重跑，
-平台对已完成小节的重复播放会快进/不计，代价可接受）。
+  按 part id 点击 → 等元数据 → 静音 → 真实 UI 设 1.5x → 循环监视：
+    - 弹题（handle_popup 工单制；超时 240s → 暂停转人工并停止批量）
+    - 播完（cur >= dur - 1.5）→ 读进度环 → confirmed/unconfirmed
+  每讲播完 Page.reload 换新页（播完的页面播放器会进错误态，点击只挪高亮不加载；
+  实测 navigate 同 URL 不触发重载，reload 才有效）。
 
 红线不变：视频页零注入（只读 DOM + 真实鼠标事件）；考试/作业页一律不碰。
 
@@ -53,8 +63,19 @@ def click(page, x, y):
     mouse(page, "mouseReleased", x, y); time.sleep(0.6)
 
 
+def _hide_noise(page) -> None:
+    """隐藏「课程提醒」「学前必读」等遮挡弹窗（只 display:none 不点击，
+    避开 btn01 滑块验证码坑）。弹窗渲染比列表慢，需在点击前反复执行。"""
+    page.eval(r"""(()=>{for (const sel of ['.el-dialog__wrapper','.el-overlay','.el-dialog']) {
+      for (const el of document.querySelectorAll(sel)) el.style.display = 'none';
+    }})()""", wait=False)
+
+
 def enumerate_tasks(page) -> list[dict]:
-    """枚举左侧列表的全部视频任务点（滚动加载全覆盖）。"""
+    """枚举左侧列表的全部视频任务点（滚动加载全覆盖）。
+
+    返回 [{id: part id, t: 展示文本, pct: 平台进度(0-100 int | None)}]。
+    """
     page.eval(r"""(() => {
       const box = document.querySelector('.left-aside, .chapter-list, [class*=list]');
       if (box) box.scrollTop = 0;
@@ -64,16 +85,17 @@ def enumerate_tasks(page) -> list[dict]:
         raw = page.eval(r"""JSON.stringify((() => {
           const out = [];
           document.querySelectorAll('.child-info.hasvideo').forEach(el => {
-            const r = el.getBoundingClientRect();
-            if (r.width < 5) return;
-            out.push({t: (el.textContent||'').replace(/\s+/g,' ').trim().slice(0,40),
-                      x: Math.round(r.x + Math.min(r.width/2, 90)),
-                      y: Math.round(r.y + r.height/2)});
+            if (!el.id || !el.id.startsWith('part')) return;
+            const p = el.querySelector(':scope > .el-progress');
+            const pct = p ? parseInt(p.getAttribute('aria-valuenow') || '', 10) : NaN;
+            out.push({id: el.id,
+                      t: (el.textContent||'').replace(/\s+/g,' ').trim().slice(0,40),
+                      pct: isNaN(pct) ? null : pct});
           });
           return out;
         })())""", wait=False)
         for it in (json.loads(raw) if isinstance(raw, str) else raw) or []:
-            seen.setdefault(it["t"], it)
+            seen.setdefault(it["id"], it)    # part id 去重
         page.eval(r"""(() => {
           const box = document.querySelector('.left-aside, .chapter-list, [class*=list]');
           if (box) box.scrollTop += 600;
@@ -93,43 +115,53 @@ def _expected_dur(title: str) -> float | None:
     return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
 
 
-def _task_coords(page, title12: str) -> dict | None:
-    """滚动到条目可见处，返回可点坐标（须在视口内）。"""
+def _task_coords(page, part_id: str) -> dict | None:
+    """按 part id 滚动到条目可见处，返回可点坐标（须在视口内）。"""
     page.eval(
-        "(() => { const el = [...document.querySelectorAll('.child-info.hasvideo')]"
-        ".find(e => (e.textContent||'').replace(/\\s+/g,' ').trim().includes(T));"
+        "(() => { const el = document.getElementById(T);"
         "if (el) el.scrollIntoView({block: 'center'}); })()".replace(
-            "T", json.dumps(title12), 1),
+            "T", json.dumps(part_id), 1),
         wait=False,
     )
     time.sleep(0.7)
     raw = page.eval(
         r"""JSON.stringify((() => {
-      const el = [...document.querySelectorAll('.child-info.hasvideo')]
-        .find(e => (e.textContent||'').replace(/\s+/g,' ').trim().includes(T));
+      const el = document.getElementById(T);
       if (!el) return null;
       const target = el.firstElementChild || el;   // 实测点内层才生效
       const r = target.getBoundingClientRect();
       if (r.y < 0 || r.y > innerHeight - 10 || r.width < 5) return null;  // 视口外
       return {x: Math.round(r.x + Math.min(r.width/2, 90)), y: Math.round(r.y + r.height/2)};
-    })())""".replace("T)", json.dumps(title12) + ")", 1).replace(
-            "T)", json.dumps(title12) + ")", 1),
+    })())""".replace("T)", json.dumps(part_id) + ")", 1),
         wait=False,
     )
     return json.loads(raw) if isinstance(raw, str) else raw
 
 
-def _norm_title(title: str) -> str:
-    """去掉时长片段并压空白，得到稳定的标题键（用于 DOM 匹配与状态持久化）。"""
-    t = re.sub(r"\d{1,2}:\d{2}(:\d{2})?", "", title)
-    return re.sub(r"\s+", "", t)
+def _task_pct(page, part_id: str, wait_s: float = 12.0) -> int | None:
+    """读平台侧该条目的进度环数值（0-100）。读不到返回 None。
 
-
-def _task_id(title: str, expected: float | None) -> str:
-    """稳定任务 ID：sha1(标题|时长)。跨重启不变，替代截断标题定位。"""
-    import hashlib
-    raw = f"{_norm_title(title)}|{expected if expected is not None else ''}"
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+    这是完成判定的唯一平台证据：>=100 才算平台认可完成。
+    """
+    deadline = time.time() + wait_s
+    while time.time() < deadline:
+        raw = page.eval(
+            r"""JSON.stringify((() => {
+          const el = document.getElementById(T);
+          if (!el) return null;
+          const p = el.querySelector(':scope > .el-progress');
+          if (!p) return -1;                     // 无进度环 = 平台未记录
+          const n = parseInt(p.getAttribute('aria-valuenow') || '', 10);
+          return isNaN(n) ? -1 : n;
+        })())""".replace("T)", json.dumps(part_id) + ")", 1), wait=False)
+        try:
+            v = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            v = None
+        if isinstance(v, int) and v >= 0:
+            return v
+        time.sleep(2)
+    return None
 
 
 def _load_state(path: Path) -> dict:
@@ -145,43 +177,11 @@ def _save_state(path: Path, state: dict) -> None:
     ts_module.atomic_write(path, json.dumps(state, ensure_ascii=False, indent=2))
 
 
-def _verify_task_done(page, title_key: str, wait_s: float = 10.0) -> bool | None:
-    """平台侧完成证据：任务条目出现 已练习/完成/100 等标记。
-
-    返回 True（确认）/ False（明确未完成）/ None（文案未渲染，无法判断）。
-    平台状态文案比列表晚渲染（实测），所以超时拿不到证据≠未完成 → 由
-    调用方计入「待确认」而非成功，也不当失败。
-    """
-    deadline = time.time() + wait_s
-    while time.time() < deadline:
-        r = page.eval(r"""JSON.stringify((() => {
-          const el = [...document.querySelectorAll('.child-info.hasvideo')]
-            .find(e => (e.textContent||'').replace(/\s+/g,'').includes(T));
-          if (!el) return null;
-          const t = (el.textContent||'').replace(/\s+/g,'');
-          return {done: /已练习|已完成|已学完|100%/.test(t), text: t.slice(0, 40)};
-        })())""".replace("T)", json.dumps(title_key) + ")", 1), wait=False)
-        d = json.loads(r) if isinstance(r, str) else r
-        if d:
-            return bool(d.get("done"))
-        time.sleep(2)
-    return None
-
-
-def _hide_noise(page) -> None:
-    """隐藏「课程提醒」「学前必读」等遮挡弹窗（只 display:none 不点击，
-    避开 btn01 滑块验证码坑）。弹窗渲染比列表慢，需在点击前反复执行。"""
-    page.eval(r"""(()=>{for (const sel of ['.el-dialog__wrapper','.el-overlay','.el-dialog']) {
-      for (const el of document.querySelectorAll(sel)) el.style.display = 'none';
-    }})()""", wait=False)
-
-
 def _refresh_page(page) -> bool:
     """硬刷新学习页并等列表渲染。
 
     实测：Page.navigate 到相同 URL 不触发真正重载（SPA 原地不动，旧播放器
-    状态全保留）；Page.reload 才是有效恢复。首次加载后的点击偶发不加载
-    （时序未钉死），reload 后再点实测稳定。
+    状态全保留）；Page.reload 才是有效恢复。
     """
     client = getattr(page, "_client", None)
     if client is not None:
@@ -206,85 +206,60 @@ def _refresh_page(page) -> bool:
     return False
 
 
-def play_one(page, task: dict, wait_answer_s: int, prev_dur: float | None,
-             stats: dict) -> tuple[str, float | None]:
-    """播一个任务点到结束。返回 (ok/timeout/skip, 当前视频时长)。
-
-    完成计数分桶（stats）：confirmed（平台证据）/ unconfirmed（播完但
-    证据不足）/ skipped / failed —— 后两者绝不计入成功。
-    """
+def _click_until_loaded(page, task: dict, prev_dur: float | None,
+                        attempts: int = 3) -> tuple[bool, dict]:
+    """按 part id 点击并等视频元数据切换。返回 (loaded, 最后一次 video_state)。"""
     expected = _expected_dur(task["t"])
-    # DOM 匹配键：整条归一化文本（含时长，与列表渲染逐字一致）。
-    # 不能用去时长键 —— 实测 DOM 里编号/时长/标题是无空格粘连的，
-    # "0.1博大…" 在 "0.100:11:04博大…" 中 includes 不命中（曾致全量假 skip）。
-    title_key = re.sub(r"\s+", "", task["t"])
-
-    # 点开并确认视频真的切换了（dur ≈ 条目时长；或 dur 变化 / cur 归零）
-    v = video_state(page) or {}
-    loaded = False
-    for attempt in range(3):
-        _hide_noise(page)              # 点击前隐藏遮挡层（挡点击的真凶）
-        coords = _task_coords(page, title_key)
+    v: dict = {}
+    for attempt in range(attempts):
+        _hide_noise(page)
+        coords = _task_coords(page, task["id"])
         if not coords:
             time.sleep(2)
             continue
         click(page, coords["x"], coords["y"])
         for _ in range(20):                       # 最多 40s 等 loader
             time.sleep(2)
-            v = video_state(page)
-            if not v or not v.get("dur"):
-                continue
+            v = video_state(page) or {}
             dur, cur = v.get("dur"), v.get("cur", 0)
+            if not dur:
+                continue
             if expected and abs(dur - expected) < 6:
-                loaded = True
-                break
+                return True, v
             if not expected and (prev_dur is None or abs(dur - prev_dur) > 6 or cur < 30):
-                loaded = True
-                break
-        if loaded:
-            break
-        v = video_state(page) or {}   # 点击可能使 video 元素短暂消失
+                return True, v
         print(f"    [warn] 第 {attempt+1} 次点击后视频未切换（dur={v.get('dur')}）", flush=True)
+    return False, v
+
+
+def play_one(page, task: dict, wait_answer_s: int, prev_dur: float | None,
+             stats: dict) -> tuple[str, float | None]:
+    """播一个任务点到结束。返回 (confirmed/unconfirmed/timeout/skip, 视频时长)。
+
+    完成计数分桶（stats）：confirmed（进度环 >=100）/ unconfirmed（播完但
+    平台进度不足）/ skipped / failed —— 后两者绝不计入成功。
+    """
+    loaded, v = _click_until_loaded(page, task, prev_dur)
     if not loaded:
-        # 播放器在上一讲播完后会进入错误态（「Sorry 您可能需要下载」），
-        # 此时列表点击只挪高亮不加载视频。实测唯一可靠恢复 = 重新导航学习页。
-        print("    [warn] 点击不切换 → 重新导航恢复播放器后重试", flush=True)
+        # 播完的页面播放器会进错误态（点击只挪高亮不加载）。
+        # 恢复 = Page.reload 硬刷新后再试一轮（实测 reload 后点击稳定）。
+        print("    [warn] 点击不切换 → Page.reload 后重试", flush=True)
         if _refresh_page(page):
-            for attempt in range(3):
-                _hide_noise(page)
-                coords = _task_coords(page, title_key)
-                if not coords:
-                    time.sleep(2)
-                    continue
-                click(page, coords["x"], coords["y"])
-                for _ in range(20):
-                    time.sleep(2)
-                    v = video_state(page)
-                    if v and v.get("dur"):
-                        dur, cur = v.get("dur"), v.get("cur", 0)
-                        if expected and abs(dur - expected) < 6:
-                            loaded = True
-                            break
-                        if not expected and (prev_dur is None or abs(dur - prev_dur) > 6 or cur < 30):
-                            loaded = True
-                            break
-                if loaded:
-                    break
-        if not loaded:
-            stats["skipped"] += 1
-            return "skip", v.get("dur") if v else prev_dur
+            loaded, v = _click_until_loaded(page, task, prev_dur)
+    if not loaded:
+        stats["skipped"] += 1
+        return "skip", v.get("dur") if v else prev_dur
 
     page.eval("document.querySelector('video').muted = true", wait=False)
     print(f"    [play] dur={v['dur']:.0f}s cur={v['cur']:.0f}s（已静音）", flush=True)
     if v.get("cur", 0) >= v["dur"] - 10:
-        # 播放器续在末尾：可能是之前看过，也可能进度没被平台记录 ——
-        # 只认平台证据，不足则计「待确认」，绝不直接算成功。
-        ok = _verify_task_done(page, title_key)
-        if ok is True:
+        # 播放器续在末尾：只认进度环证据
+        pct = _task_pct(page, task["id"])
+        print(f"    [note] 续在末尾，平台进度={pct}%", flush=True)
+        if pct is not None and pct >= 100:
             stats["confirmed"] += 1
             return "confirmed", v["dur"]
         stats["unconfirmed"] += 1
-        print("    [note] 续在末尾且平台无完成证据 → 待确认", flush=True)
         return "unconfirmed", v["dur"]
 
     if v.get("cur", 0) < v["dur"] - 5:             # 从头看的才设倍速
@@ -299,7 +274,7 @@ def play_one(page, task: dict, wait_answer_s: int, prev_dur: float | None,
         if v.get("dur") and v.get("cur", 0) >= v["dur"] - 1.5:
             break
         r = handle_popup(page, ANSWER_DIR, wait_answer_s=wait_answer_s,
-                         course_id="1000007974", chapter_id=title_key[:12])
+                         course_id="1000007974", chapter_id=task["id"])
         if r["status"] == "timeout":
             stats["failed"] += 1
             return "timeout", v.get("dur")
@@ -321,13 +296,13 @@ def play_one(page, task: dict, wait_answer_s: int, prev_dur: float | None,
                 if v2 and v2.get("paused"):
                     page.eval("document.querySelector('video').play()", wait=False)
 
-    # ── 完成核验：元素消失/到末尾 ≠ 成功，必须拿平台证据 ──
-    ok = _verify_task_done(page, title_key, wait_s=12.0)
-    if ok is True:
+    # ── 完成核验：播完 ≠ 成功，以进度环为准 ──
+    pct = _task_pct(page, task["id"], wait_s=15.0)
+    print(f"    [note] 播完，平台进度={pct}%", flush=True)
+    if pct is not None and pct >= 100:
         stats["confirmed"] += 1
         return "confirmed", v["dur"] if v else None
     stats["unconfirmed"] += 1
-    print("    [note] 播完但平台证据不足 → 待确认（不计成功）", flush=True)
     return "unconfirmed", v["dur"] if v else None
 
 
@@ -370,21 +345,25 @@ def main() -> int:
             print(">> 课程页超时", flush=True); return 1
 
         tasks = enumerate_tasks(page)
-        print(f"[batch] 视频任务点 {len(tasks)} 个", flush=True)
+        done_now = [t for t in tasks if (t.get("pct") or 0) >= 100]
+        print(f"[batch] 视频任务点 {len(tasks)} 个（平台进度>=100 的 {len(done_now)} 个）", flush=True)
         stats = {"confirmed": 0, "unconfirmed": 0, "skipped": 0, "failed": 0,
                  "quizzes_ok": 0, "quizzes_unverified": 0, "skipped_confirmed": 0}
         state_path = Path("runs/batch_state.json")
         state = _load_state(state_path)
-        # 断点：只跳过有平台证据的 confirmed；待确认/跳过/失败都重跑
+        # 断点：跳过 平台进度>=100 或 state=confirmed 的；其余重跑
         todo = []
         for task in tasks:
-            tid = _task_id(task["t"], _expected_dur(task["t"]))
-            if state.get(tid, {}).get("status") == "confirmed":
-                print(f"[batch] 跳过（已确认完成）{task['t'][:36]}", flush=True)
+            if (task.get("pct") or 0) >= 100:
+                print(f"[batch] 跳过（平台进度100）{task['t'][:36]}", flush=True)
+                stats["skipped_confirmed"] += 1
+                continue
+            if state.get(task["id"], {}).get("status") == "confirmed":
+                print(f"[batch] 跳过（本地已确认）{task['t'][:36]}", flush=True)
                 stats["skipped_confirmed"] += 1
                 continue
             todo.append(task)
-        print(f"[batch] 待跑 {len(todo)}（跳过已确认 {len(tasks)-len(todo)}）", flush=True)
+        print(f"[batch] 待跑 {len(todo)}（跳过已完成 {len(tasks)-len(todo)}）", flush=True)
 
         prev_dur: float | None = None
         t0 = time.time()
@@ -392,9 +371,9 @@ def main() -> int:
             if time.time() - t0 > args.limit_min * 60:
                 print(f"[batch] 到达时限", flush=True)
                 break
-            tid = _task_id(task["t"], _expected_dur(task["t"]))
-            print(f"[batch] ({i+1}/{len(todo)}) {task['t'][:36]}", flush=True)
+            print(f"[batch] ({i+1}/{len(todo)}) {task['t'][:36]}（平台进度 {task.get('pct')}%）", flush=True)
             r, prev_dur = play_one(page, task, args.wait_answer, prev_dur, stats)
+            tid = task["id"]
             if r == "confirmed":
                 state[tid] = {"status": "confirmed", "at": time.strftime("%Y-%m-%dT%H:%M:%S")}
                 _save_state(state_path, state)
@@ -424,7 +403,7 @@ def _summary(stats: dict) -> None:
           f"确认完成 {stats['confirmed']} ｜ 待确认 {stats['unconfirmed']} ｜ "
           f"跳过 {stats['skipped']} ｜ 失败 {stats['failed']} ｜ "
           f"弹题✓ {stats['quizzes_ok']} ｜ 弹题待确认 {stats['quizzes_unverified']} ｜ "
-          f"跳过(已确认) {stats['skipped_confirmed']}", flush=True)
+          f"跳过(已完成) {stats['skipped_confirmed']}", flush=True)
 
 
 if __name__ == "__main__":
