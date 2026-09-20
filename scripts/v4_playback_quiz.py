@@ -139,45 +139,75 @@ def video_state(page) -> dict | None:
 
 
 def set_speed_via_ui(page) -> str:
-    """在**播放器区域内**找倍速 UI 并点 1.5。返回描述。
+    """通过播放器真实 UI 设 1.5 倍速（2026-09-20 实测打通的流程）。
 
-    之前误点过左侧课程列表的章节编号"1.5"（x=83, child-sort）——
-    所以这里限定 x 必须在播放器矩形内。
+    播放器是 ableVideoPlayer：控制栏右侧有「X 1.0」当前倍率标签，
+    悬浮它展开竖排菜单（X 1.5 / X 1.25 / X 1.0，在触发器上方）。
+    刻意不走 video.playbackRate 直改：实测 rate 被接受但 cur 冻结
+    （播放器抗篡改）。触发器必须在 video 矩形内找——左侧课程列表
+    的章节编号"1.5"（child-sort）会干扰全局搜索。
     """
     vw = page.eval(
         "(()=>{const v=document.querySelector('video').getBoundingClientRect();"
-        "return {x:v.x,y:v.y,w:v.width,h:v.height}})()", wait=False)
+        "return {x:v.x,y:v.y,width:v.width,height:v.height}})()", wait=False)
     if isinstance(vw, str):
         vw = json.loads(vw)
-    # 悬浮控制栏（播放器底部）
-    mouse(page, "mouseMoved", vw["x"] + vw["w"] / 2, vw["y"] + vw["h"] * 0.9)
+
+    def mouse(ev, x, y, pressed=False):
+        page._client.call("Input.dispatchMouseEvent", {
+            "type": ev, "x": x, "y": y, "button": "left",
+            "buttons": 1 if pressed else 0, "clickCount": 1 if pressed else 0})
+
+    def click(x, y):
+        mouse("mouseMoved", x, y); time.sleep(0.25)
+        mouse("mousePressed", x, y, True); time.sleep(0.05)
+        mouse("mouseReleased", x, y); time.sleep(0.8)
+
+    # 让控制栏出现
+    mouse("mouseMoved", vw["x"] + vw["width"] * 0.5, vw["y"] + vw["height"] * 0.85)
+    time.sleep(0.3)
+    mouse("mouseMoved", vw["x"] + vw["width"] * 0.5, vw["y"] + vw["height"] - 15)
     time.sleep(1.2)
-    raw = page.eval(r"""JSON.stringify((() => {
+
+    trig = page.eval(r"""JSON.stringify((() => {
       const v = document.querySelector('video').getBoundingClientRect();
-      const cands = [];
       for (const el of document.querySelectorAll('span,div,li')) {
         if (el.children.length) continue;
-        const t = (el.textContent || '').replace(/\s+/g, '');
-        if (!/^(1\.5|1\.5X|1\.5x|倍速)$/.test(t)) continue;
+        const t = (el.textContent||'').replace(/\s+/g,'').toUpperCase();
+        if (!/^(X)?1\.0(X)?$/.test(t)) continue;
         const r = el.getBoundingClientRect();
-        if (r.width < 2 || r.height < 2) continue;
-        // 必须在播放器矩形内（含控制栏延伸区）
-        if (r.x < v.x - 40 || r.x > v.x + v.w + 40) continue;
-        if (r.y < v.y - 60 || r.y > v.y + v.h + 60) continue;
-        cands.push({t, x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2),
-                    cls: String(el.className).slice(0, 40)});
+        if (r.width < 5 || r.x < v.x || r.x > v.x + v.width) continue;
+        if (r.y < v.y + v.height - 100 || r.y > v.y + v.height + 30) continue;
+        return {x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2)};
       }
-      return cands;
+      return null;
     })())""", wait=False)
-    cands = json.loads(raw) if isinstance(raw, str) else raw
-    if not cands:
-        return "未在播放器区域内找到倍速控件"
-    # 优先点文案恰为 1.5 的
-    tgt = next((c for c in cands if c["t"] == "1.5"), cands[0])
-    click(page, tgt["x"], tgt["y"])
-    time.sleep(2)
+    trig = json.loads(trig) if isinstance(trig, str) else trig
+    if not trig:
+        return "未找到倍率触发器 X 1.0"
+    mouse("mouseMoved", trig["x"], trig["y"])
+    time.sleep(1.5)          # 纯悬浮等菜单展开（点击反而会收起）
+    item = page.eval(r"""JSON.stringify((() => {
+      const v = document.querySelector('video').getBoundingClientRect();
+      for (const el of document.querySelectorAll('span,div,li')) {
+        if (el.children.length) return null;
+        const t = (el.textContent||'').replace(/\s+/g,'').toUpperCase();
+        if (!/^X?1\.5X?$/.test(t)) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width < 5 || r.x < v.x - 30 || r.x > v.x + v.width + 30) continue;
+        if (r.y < v.y - 30 || r.y > v.y + v.height + 30) continue;
+        return {x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2)};
+      }
+      return null;
+    })())""", wait=False)
+    item = json.loads(item) if isinstance(item, str) else item
+    if not item:
+        return "悬浮后菜单未展开"
+    mouse("mouseMoved", item["x"], item["y"]); time.sleep(0.5)
+    mouse("mousePressed", item["x"], item["y"], True); time.sleep(0.05)
+    mouse("mouseReleased", item["x"], item["y"]); time.sleep(2)
     v = video_state(page) or {}
-    return f"点击了 {tgt} | rate={v.get('rate')}"
+    return f"1.5x 结果: rate={v.get('rate')}"
 
 
 def handle_popup(page, ticket_dir: Path, wait_answer_s: float = 90.0) -> str:
@@ -283,10 +313,12 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit-min", type=int, default=15, help="总运行时长上限")
     ap.add_argument("--speed", action="store_true", help="尝试通过真实 UI 设 1.5 倍速")
+    ap.add_argument("--visible", action="store_true",
+                    help="窗口显示在屏幕上（默认 offscreen；需要人工点弹窗时用）")
     args = ap.parse_args()
 
     port = 9334
-    plan, proc = B.launch(background="offscreen")
+    plan, proc = B.launch(background=None if args.visible else "offscreen")
     dl = time.time() + 40
     while time.time() < dl:
         if B.probe_cdp(port).alive:
@@ -335,7 +367,8 @@ def main() -> int:
         if not (v and v.get("dur")):
             print(">> 播放器未就绪", flush=True)
             return 1
-        print(f"[play] 播放中 dur={v['dur']:.0f}s cur={v['cur']:.1f}s", flush=True)
+        page.eval("document.querySelector('video').muted = true", wait=False)
+        print(f"[play] 播放中 dur={v['dur']:.0f}s cur={v['cur']:.1f}s (已静音)", flush=True)
 
         if args.speed:
             print("[speed]", set_speed_via_ui(page), flush=True)
@@ -351,8 +384,8 @@ def main() -> int:
             if now - last_report > 60:
                 last_report = now
                 print(f"[tick] cur={v['cur']:.0f}/{v['dur']:.0f}s paused={v['paused']}", flush=True)
-            if not v.get("paused") and v.get("cur", 0) > 3:
-                # 只在播放中检测弹题（避免把载入中的空壳当弹窗）
+            if v.get("cur", 0) > 3:
+                # 弹题会主动暂停视频，所以不能以 paused 为前提过滤
                 r = handle_popup(page, ANSWER_DIR)
                 if r.startswith("answered"):
                     handled += 1
