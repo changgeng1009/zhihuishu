@@ -84,7 +84,7 @@ def _write_config(
     workdir: Path,
     course_url: str,
     *,
-    speed: float = 1.0,
+    speed: float | None = None,
     limit_min: int = 30,
     driver: str = "Edge",
     username: str = "",
@@ -93,9 +93,10 @@ def _write_config(
 ) -> Path:
     """把 config.ini 写到**账号工作区**（绝不写 upstreams/）。"""
     workdir.mkdir(parents=True, exist_ok=True)
-    from .zhs_dom import MAX_SPEED, clamp_speed
+    from .zhs_dom import DEFAULT_SPEED, MAX_SPEED, clamp_speed
 
-    speed = clamp_speed(speed)
+    # 用户要求 1.5 倍速（实测也是当前页面最高档），未显式指定时用默认值
+    speed = clamp_speed(DEFAULT_SPEED if speed is None else speed)
     lines = [
         "[user-account]",
         f"username = {username}",
@@ -304,6 +305,8 @@ def op_check_course(args: dict[str, Any], workdir: Path) -> int:
 
 def op_run_video(args: dict[str, Any], workdir: Path) -> int:
     """写操作：真实播放课程视频并上报进度。"""
+    from .zhs_dom import DEFAULT_SPEED
+
     url = args.get("course_url") or args.get("url")
     if not url:
         return _fail(EXIT_INTERNAL, "INVALID_PARAM", hint="run_video 需要 --url")
@@ -316,7 +319,7 @@ def op_run_video(args: dict[str, Any], workdir: Path) -> int:
                     "dry_run": True,
                     "would_run": "Autovisor",
                     "course_url": url,
-                    "speed": args.get("speed", 1.0),
+                    "speed": args.get("speed", DEFAULT_SPEED),
                     "limit_min": args.get("limit_min", 30),
                 },
             }
@@ -327,7 +330,7 @@ def op_run_video(args: dict[str, Any], workdir: Path) -> int:
     config_path = _write_config(
         workdir,
         url,
-        speed=float(args.get("speed", 1.0)),
+        speed=float(args.get("speed", DEFAULT_SPEED)),
         limit_min=int(args.get("limit_min", 30)),
         username=str(args.get("username", "")),
         password=str(args.get("password", "")),

@@ -240,17 +240,34 @@ def find_browser() -> Path:
 # --------------------------------------------------------------------------
 
 
+#: 后台运行模式。**刻意不提供 `--headless`**：
+#: 智慧树这类平台会对无头浏览器做指纹检测，而且视频播放/解码在 headless 下
+#: 行为不可控。下面两种模式对页面来说与"正常窗口"完全一样（同样的渲染管线、
+#: 同样的指纹），只是人看不见 —— 这是"要后台"与"要不被识别"的唯一两全解。
+BACKGROUND_MODES: dict[str, tuple[str, ...]] = {
+    # 最小化到任务栏：进程照常渲染，点一下就能看
+    "minimized": ("--start-minimized",),
+    # 移出屏幕：完全不打扰当前桌面，但窗口"真实存在"
+    # （-32000 是 Windows 允许的最小窗口坐标，任何屏幕都看不到它）
+    "offscreen": ("--window-position=-32000,-32000", "--window-size=1280,900"),
+}
+
+
 def launch_args(
     browser: Path,
     profile: Path,
     port: int,
     url: str | None = None,
     extra: Sequence[str] = (),
+    background: str | None = None,
 ) -> list[str]:
     """构造启动参数。
 
     `--user-data-dir` 与 `--remote-debugging-address=127.0.0.1` 都必须存在：
     前者是隔离手段，后者保证 CDP 只监听本机（不暴露到局域网）。
+
+    :param background: `None` 正常窗口；`"minimized"` 最小化；`"offscreen"` 移出屏幕。
+        两者都不影响 CDP 与页面功能，见 `BACKGROUND_MODES` 的注释。
     """
     args = [
         str(browser),
@@ -261,6 +278,12 @@ def launch_args(
         "--no-first-run",
         "--no-default-browser-check",
     ]
+    if background is not None:
+        if background not in BACKGROUND_MODES:
+            raise ValueError(
+                f"未知后台模式 {background!r}；可选：{sorted(BACKGROUND_MODES)}"
+            )
+        args.extend(BACKGROUND_MODES[background])
     args.extend(extra)
     if url:
         args.append(url)
@@ -346,6 +369,7 @@ def plan(
     root: Path | None = None,
     port: int | None = None,
     url: str | None = None,
+    background: str | None = None,
 ) -> LaunchPlan:
     """计算启动计划并做全部安全检查。**不产生任何副作用。**"""
     browser = find_browser()
@@ -356,7 +380,7 @@ def plan(
         browser=browser,
         profile=profile,
         port=target_port,
-        args=launch_args(browser, profile, target_port, url),
+        args=launch_args(browser, profile, target_port, url, background=background),
         already_running=status.alive,
         cdp=status,
     )
@@ -367,6 +391,7 @@ def launch(
     port: int | None = None,
     url: str | None = None,
     wait_ready_s: float = 20.0,
+    background: str | None = None,
 ) -> tuple[LaunchPlan, subprocess.Popen[Any] | None]:
     """按计划启动独立 Edge 实例。
 
@@ -382,7 +407,7 @@ def launch(
        启动器进程模型，拉起主进程后启动器自身即退出。唯一的成功判据是
        CDP 端点是否就绪。
     """
-    launch_plan = plan(root, port, url)
+    launch_plan = plan(root, port, url, background=background)
     launch_plan.profile.mkdir(parents=True, exist_ok=True)
 
     if launch_plan.already_running:
@@ -631,9 +656,14 @@ def _show(root: Path | None = None) -> int:
     return 0
 
 
-def _launch(root: Path | None, url: str | None, port: int | None) -> int:
+def _launch(
+    root: Path | None,
+    url: str | None,
+    port: int | None,
+    background: str | None = None,
+) -> int:
     try:
-        launch_plan, process = launch(root, port, url)
+        launch_plan, process = launch(root, port, url, background=background)
     except IsolationError as exc:
         print(f"[拒绝] {exc}", file=sys.stderr)
         return 2
@@ -730,6 +760,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--show", action="store_true", help="显示配置与禁区（默认）")
     group.add_argument("--launch", action="store_true", help="启动独立实例")
+    group.add_argument(
+        "--minimized", action="store_true",
+        help="后台：最小化到任务栏。页面功能与正常窗口完全一致（不用 headless，"
+             "因为平台可能对无头浏览器做指纹检测）",
+    )
+    group.add_argument(
+        "--offscreen", action="store_true",
+        help="后台：移出屏幕。窗口真实存在但看不见；与 --minimized 同时给时优先生效",
+    )
     group.add_argument("--status", action="store_true", help="探测 CDP 是否在线")
     group.add_argument("--diagnose", action="store_true", help="全面体检（只读）")
     group.add_argument("--stop", action="store_true", help="显示如何停止（不执行）")
@@ -754,7 +793,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if args.launch:
-        return _launch(root, args.url, args.port)
+        # 后台模式：窗口不抢占桌面，但页面功能与正常窗口完全一致
+        background = "offscreen" if args.offscreen else (
+            "minimized" if args.minimized else None
+        )
+        return _launch(root, args.url, args.port, background)
 
     return _show(root)
 

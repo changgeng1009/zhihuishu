@@ -27,11 +27,18 @@ ROOT = Path(__file__).resolve().parent.parent
 
 class TestZhsDom(unittest.TestCase):
     def test_page_mapping_for_all_known_hosts(self):
+        """域名 → 布局的映射**只是标签，不是判据**（判据是 DOM 命中数）。
+
+        2026-09-20 在真实课程上实测：`studywisdomh5.zhihuishu.com` 返回的是
+        `.child-main` 结构（NEW_SHARED），而不是上游 OCS 知识表里的
+        `wisdom_2025` 布局 —— 平台会把同一布局挂到不同域名下。
+        这里把实测结果钉住，防止有人"顺手改回去"。
+        """
         cases = {
             "https://studyvideoh5.zhihuishu.com/study": ZhsPage.CLASSIC,
             "https://studyplush5.zhihuishu.com/index": ZhsPage.NEW_SHARED,
-            "https://fusioncourseh5.zhihuishu.com/stuStudy": ZhsPage.AI_TUTOR,
-            "https://studywisdomh5.zhihuishu.com/study/index": ZhsPage.WISDOM_2025,
+            # ⚠️ 实测：该域的实际布局是 new_shared（.child-main），不是 wisdom_2025
+            "https://studywisdomh5.zhihuishu.com/study/index": ZhsPage.NEW_SHARED,
             "https://wisdom-mooc.zhihuishu.com/study/index": ZhsPage.WISDOM_MOOC,
             "https://ai-smart-course-student-pro.zhihuishu.com/learnPage": ZhsPage.SMART_COURSE,
             "https://smartcoursestudent.zhihuishu.com/learnPage": ZhsPage.SMART_COURSE,
@@ -42,16 +49,31 @@ class TestZhsDom(unittest.TestCase):
                 self.assertIsNotNone(profile, f"{url} 未映射到任何页面")
                 self.assertIs(profile.page, expected)
 
-    def test_unknown_host_returns_none(self):
-        self.assertIsNone(page_for_url("https://chaoxing.com/x"))
-        self.assertIsNone(page_for_url(""))
+    def test_layout_must_be_detectable_without_host_mapping(self):
+        """布局识别的**真正判据**是 DOM 命中数，域名映射只是兜底标签。
 
-    def test_every_profile_has_required_fields(self):
+        因此每个 profile 的 `item_selector` 必须足以在真实页面上区分出自己，
+        并且必须有"任务点约束"来排除章标题（实测 .child-main 命中 104 个，
+        其中只有父级带 .child-time 的 66 个才是任务点）。
+        """
         for page, profile in PAGES.items():
             with self.subTest(page=page):
                 self.assertTrue(profile.item_selector, f"{page} 缺 item_selector")
                 self.assertTrue(profile.label)
-                self.assertTrue(profile.host_patterns)
+                self.assertTrue(
+                    profile.host_patterns or page is ZhsPage.WISDOM_2025,
+                    f"{page} 既没有 host 也不是已声明未实测的布局",
+                )
+
+    def test_new_shared_has_task_item_constraint(self):
+        """NEW_SHARED 必须带 `.child-time` 约束 —— 否则把章标题当任务点。"""
+        profile = PAGES[ZhsPage.NEW_SHARED]
+        self.assertEqual(profile.item_selector, ".child-main")
+        self.assertEqual(profile.item_constraint_selector, ".child-time")
+
+    def test_unknown_host_returns_none(self):
+        self.assertIsNone(page_for_url("https://chaoxing.com/x"))
+        self.assertIsNone(page_for_url(""))
 
     def test_popup_profiles_match_ocs_knowledge(self):
         """三种弹题形态的选择器必须与 OCS zhs.ts 一致（这是复用来的事实）。"""

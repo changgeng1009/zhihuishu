@@ -79,6 +79,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--course-id", required=True)
     p.add_argument("--chapter-id", default=None)
     p.add_argument("--types", default=None, help="逗号分隔，如 video,reading")
+    p.add_argument(
+        "--course-url", default=None,
+        help="课程学习页 URL（智慧树必须给：读侧是在页面里读的；"
+             "list_courses 返回的 learn_url 可直接用）",
+    )
     p = add("get_homework", "作业列表与截止看板")
     p.add_argument("--course-id", default=None)
     p = add("get_notices", "通知中心")
@@ -108,6 +113,11 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--dry-run", action="store_true", help="只预览不写")
         p.add_argument("--confirm", action="store_true", help="确认真实写操作")
         p.add_argument(
+            "--course-url", default=None,
+            help="课程学习页 URL（智慧树写侧需要：Autovisor 与浏览器通道都按 URL 工作；"
+                 "list_courses 返回的 learn_url 可直接用）",
+        )
+        p.add_argument(
             "--allow-work",
             action="store_true",
             help="M5：处理章节检测(quiz)，题目交操控 Agent 作答（默认 submit=false 不交卷）",
@@ -124,6 +134,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--speed", type=float, default=None)
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--confirm", action="store_true")
+    p.add_argument(
+        "--course-url", default=None,
+        help="课程学习页 URL（智慧树写侧需要；list_courses 返回的 learn_url 可直接用）",
+    )
     p.add_argument(
         "--allow-work",
         action="store_true",

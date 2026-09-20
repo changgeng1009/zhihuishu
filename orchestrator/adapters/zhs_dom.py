@@ -69,6 +69,13 @@ class PageProfile:
     popup: "PopupProfile | None" = None
     #: 该页面的进度显示点
     progress_selector: str = ""
+    #: **真正的任务点约束**：条目或其父级必须含有这个选择器。
+    #:
+    #: 2026-09-20 在真实课程上实测出来的必要性：在
+    #: `studywisdomh5.zhihuishu.com/study/index` 上，`.child-main` 命中 104 个，
+    #: 但其中一部分是**章标题**（"上古至秦萌芽时期"），只有父级带 `.child-time`
+    #: 的才是真正的视频任务点。不区分就会把章标题当成任务点报上去。
+    item_constraint_selector: str = ""
     #: 已知的脆弱点（写进日志/文档，提醒排障者）
     caveats: tuple[str, ...] = field(default_factory=tuple)
 
@@ -141,7 +148,7 @@ PAGES: dict[ZhsPage, PageProfile] = {
     ZhsPage.NEW_SHARED: PageProfile(
         page=ZhsPage.NEW_SHARED,
         label="新共享课",
-        host_patterns=("studyplush5.zhihuishu.com",),
+        host_patterns=("studyplush5.zhihuishu.com", "studywisdomh5.zhihuishu.com"),
         item_selector=".child-main",
         current_class="current",
         finished_selector=".finish-icon",
@@ -149,9 +156,12 @@ PAGES: dict[ZhsPage, PageProfile] = {
         course_name_selector=".top-back-box > span:nth-child(2)",
         popup=POPUPS[ZhsPage.NEW_SHARED],
         progress_selector=".child-time",
+        item_constraint_selector=".child-time",
         caveats=(
-            "条目必须同时有 .child-time 父级兄弟，否则不是任务点",
-            "课程名与章节名在同一个节点，需用 /课程名称：(.+)/ 提取",
+            "条目必须满足：父级含 .child-time（视频时长）—— 没有的是章标题，不是任务点",
+            "状态文案在条目父级里（『未练习』/『已完成』），不在条目本身",
+            "当前项是父级的 class 含 current",
+            "实测：studywisdomh5 的实际页面也走这套选择器，与域名无关",
         ),
     ),
     ZhsPage.AI_TUTOR: PageProfile(
@@ -173,8 +183,12 @@ PAGES: dict[ZhsPage, PageProfile] = {
     ),
     ZhsPage.WISDOM_2025: PageProfile(
         page=ZhsPage.WISDOM_2025,
-        label="2025-9 新智慧共享课",
-        host_patterns=("studywisdomh5.zhihuishu.com",),
+        label="2025-9 新智慧共享课（布局变体，未实测）",
+        # ⚠️ `studywisdomh5.zhihuishu.com` 曾被按域名映射到本布局，但 2026-09-20
+        # 在真实课程上实测发现该域返回的是 `.child-main` 结构（见 NEW_SHARED）。
+        # 域名不是布局的可靠判据 —— 现在以 DOM 命中数为准（`detectLayout`），
+        # 这里保留 host 仅用于**打标签**，不再作为选择依据。
+        host_patterns=(),
         item_selector=".chapter-content .chapter-item",
         current_class="current",
         finished_selector=".finish-icon",
@@ -183,8 +197,9 @@ PAGES: dict[ZhsPage, PageProfile] = {
         popup=POPUPS[ZhsPage.AI_TUTOR],
         progress_selector=".finish-icon",
         caveats=(
+            "该布局来自上游 OCS 的知识，本项目**尚未在真实账号上观测到**",
             "任务点嵌套：.chapter-content-second 才是叶子，需先展开再拍平",
-            "课程名与章节名都在 .course-name，需提取",
+            "按域名映射布局已被证伪，改由 DOM 命中数决定",
         ),
     ),
     ZhsPage.WISDOM_MOOC: PageProfile(
@@ -235,8 +250,20 @@ CONTROLS = {
     "volume": ".volumeBox",
 }
 
-#: 智慧树倍速硬上限（Autovisor README 明确：最高 1.8）
+#: 智慧树倍速上限。Autovisor README 明确最高 1.8 —— 但**实测**这门课的
+#: 页面只提供 1.0 / 1.25 / 1.5 三档（1.5 即最高档）。
+#: 所以：上限只作夹紧用，真正选哪档由页面实际提供的档位决定（见 zhs_js.setSpeed）。
 MAX_SPEED: float = 1.8
+
+#: 本项目的默认播放倍速。
+#:
+#: 用户明确要求 1.5 倍速。实测这也正是当前课程页面的最高档，
+#: 于是取它作默认 —— 既不超出平台允许范围，也不用每个命令都手写 `--speed 1.5`。
+#: 需要时用 `--speed` 覆盖，会被 `clamp_speed` 夹到 [1.0, MAX_SPEED]。
+DEFAULT_SPEED: float = 1.5
+
+#: 实测观测到的档位（仅作记录与排障提示；真实档位永远从页面读）
+OBSERVED_SPEEDS: tuple[float, ...] = (1.0, 1.25, 1.5)
 
 #: 页面上的杂项弹窗（需要关闭/跳过，否则挡住任务流）
 NOISE_DIALOGS = (
