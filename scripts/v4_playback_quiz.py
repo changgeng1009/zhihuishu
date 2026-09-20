@@ -212,6 +212,30 @@ def set_speed_via_ui(page) -> str:
 
 def handle_popup(page, ticket_dir: Path, wait_answer_s: float = 300.0) -> str:
     """提取弹题 → 写工单 → 等 Agent 答案 → 真实点击提交。"""
+    # 已提交过的题会以「已提交」态重弹（平台记忆），直接关面板恢复播放
+    done = page.eval(r"""JSON.stringify((() => {
+      const w = document.querySelector('.ai-test-question-wrapper');
+      if (!w) return false;
+      for (const el of w.querySelectorAll('[class*=done], .btn')) {
+        const r = el.getBoundingClientRect();
+        if (r.width > 5 && (el.textContent||'').replace(/\s+/g,'') === '已提交') return true;
+      }
+      return false;
+    })())""", wait=False)
+    if done is True or done == "true":
+        page.eval(r"""(()=>{const w=document.querySelector('.ai-test-question-wrapper');
+          if (!w) return; for (const el of w.querySelectorAll('[class*=close]')) {
+            const r = el.getBoundingClientRect();
+            if (r.width > 6 && r.width < 50) {
+              el.dispatchEvent(new MouseEvent('click', {bubbles:true}));
+            } } })()""", wait=False)
+        time.sleep(1.5)
+        v = video_state(page)
+        if v and v.get("paused"):
+            page.eval("document.querySelector('video').play()", wait=False)
+        print("[quiz] 已提交过的题重弹 → 关面板恢复播放", flush=True)
+        return "answered(already)"
+
     raw = page.eval(POPUP_JS, wait=False)
     popup = json.loads(raw) if isinstance(raw, str) else raw
     if not popup:
