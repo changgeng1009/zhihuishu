@@ -176,7 +176,10 @@ def play_one(page, task: dict, wait_answer_s: int, prev_dur: float | None,
     证据不足）/ skipped / failed —— 后两者绝不计入成功。
     """
     expected = _expected_dur(task["t"])
-    title_key = _norm_title(task["t"])[:24]
+    # DOM 匹配键：整条归一化文本（含时长，与列表渲染逐字一致）。
+    # 不能用去时长键 —— 实测 DOM 里编号/时长/标题是无空格粘连的，
+    # "0.1博大…" 在 "0.100:11:04博大…" 中 includes 不命中（曾致全量假 skip）。
+    title_key = re.sub(r"\s+", "", task["t"])
 
     # 点开并确认视频真的切换了（dur ≈ 条目时长；或 dur 变化 / cur 归零）
     v = video_state(page) or {}
