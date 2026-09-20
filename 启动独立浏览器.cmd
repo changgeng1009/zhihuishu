@@ -72,9 +72,10 @@ if "%RC%"=="0" (
   echo ============================================================
   echo   Next steps
   echo     1. Log in inside the Edge window that just opened.
-  echo     2. Back in this console, press Ctrl+C here first, then run:
+  echo     2. Open another terminal in this folder and run:
   echo            zhs cookies_login
-  echo        That waits for the login and saves the cookies.
+  echo        It watches that window and saves the cookies once you
+  echo        are logged in. Leave this console open meanwhile.
   echo     3. Verify the session:
   echo            zhs cookies_verify
   echo.
