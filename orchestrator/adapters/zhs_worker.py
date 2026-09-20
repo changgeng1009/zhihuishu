@@ -70,6 +70,73 @@ def _upstream_dir() -> Path:
         return Path(env)
     return Path(__file__).resolve().parents[2] / "upstreams" / "Autovisor"
 
+def _runtime_copy(workdir: Path) -> Path:
+    """把上游快照复制到**账号工作区**并返回可执行副本的根。
+
+    ## 为什么必须复制，而不是直接跑 upstreams/Autovisor
+
+    红线 R2 要求 `upstreams/` 只读。但 Autovisor 的 `runtime_root`
+    是"它自己仓库的根"（`modules/logger.py: get_runtime_root()` 用
+    `__file__` 推导，**不受 cwd 或环境变量控制**），于是它会把
+    `data/cookies.json` 和 `logs/*.txt` 写进 `upstreams/Autovisor/`。
+
+    它没有提供任何重定向入口，改它的源码又违反 R2 —— 所以唯一
+    两全的办法是：把快照复制一份到账号工作区再运行。
+    上游保持逐字节不变（`cli upstreams` 会持续核对），副本是一次性的、
+    可随时删除重建，且天然实现了"每个账号一份独立运行时"。
+
+    副本在 `accounts/{id}/autovisor/`（gitignored），属于项目内（R5）。
+    """
+    src = _upstream_dir()
+    dest = workdir / "autovisor"
+    marker = dest / ".runtime_copy_ok"
+
+    # 快照内容有变（例如换 commit）时重建副本
+    stamp_src = src / "modules" / "version.py"
+    stamp_dst = dest / "modules" / "version.py"
+    if marker.is_file() and stamp_src.is_file() and stamp_dst.is_file():
+        if stamp_src.read_bytes() == stamp_dst.read_bytes():
+            return dest
+
+    if dest.exists():
+        import shutil
+
+        shutil.rmtree(dest, ignore_errors=True)
+    import shutil
+
+    shutil.copytree(
+        src,
+        dest,
+        # data/ 必须带上：config.ini 解析依赖 data/mirrors.json（镜像源列表）。
+        # 只排除 logs 与运行态目录，这些才会在运行时被写。
+        ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc", "logs"),
+        dirs_exist_ok=True,
+    )
+    # ★ 清掉副本 packages/ 里上游自带的 cv2 / numpy。
+    #
+    # 上游 bug（installer.py 自己的注释承认了）：Python 3.13 目标版本是
+    # opencv 4.10.0.84（numpy 2 ABI），但镜像上没有 .84，回退下载的却是
+    # 4.10.0.82 —— 那是按 numpy 1.x ABI 编译的，配 numpy 2 在 import 时报错。
+    # 而 start() 会先把 packages/ 插到 sys.path 最前，于是永远 import 失败、
+    # 永远判定"未安装"、永远重新下载 —— 死循环。
+    #
+    # 解法：packages/ 只留 zbar 滑块要的 DLL，cv2/numpy 用 .venv 里的
+    # （numpy 2.1.3 + opencv 4.10.0.84），normalize_version 截成三段后比对通过。
+    for junk in ("cv2", "numpy", "numpy.libs"):
+        shutil.rmtree(dest / "packages" / junk, ignore_errors=True)
+    for item in (dest / "packages").glob("numpy*"):
+        shutil.rmtree(item, ignore_errors=True) if item.is_dir() else item.unlink(
+            missing_ok=True
+        )
+    for item in (dest / "packages").glob("opencv_python*.dist-info"):
+        shutil.rmtree(item, ignore_errors=True)
+
+    marker.write_text(
+        f"runtime copy of {src}\ncopied_at={time.strftime('%Y-%m-%dT%H:%M:%S')}\n",
+        encoding="utf-8",
+    )
+    return dest
+
 
 def _check_deps() -> tuple[bool, str]:
     """探测上游依赖是否可用。只 import，不启动浏览器。"""
@@ -105,6 +172,14 @@ def _write_config(
         "[browser-option]",
         f"driver = {driver}",
         "EXE_PATH =",
+        # ★ 附着到本项目的独立 Edge（CDP 9333），而不是自己再拉一个浏览器：
+        #   ① 复用已登录会话与已关闭的弹窗状态（Autovisor 自己的 profile 是空的，
+        #      「课程提醒」「学前必读」会挡住任务点点击，实测使其点击超时崩溃）；
+        #   ② 消除"两套浏览器抢同一账号会话"的互斥问题（manifest 里 max_concurrency=1）；
+        #   ③ cdpUrl 必须显式给出 —— 上游默认 9222，且 resolve_cdp_endpoint 只在
+        #      "配置值 != 默认值" 时才采用配置值。
+        "attachExistingChrome = True",
+        "cdpUrl = http://127.0.0.1:9333",
         "",
         "[script-option]",
         "enableAutoCaptcha = True",
@@ -226,7 +301,7 @@ def _classify_exit(code: int, output: str) -> int:
 # ops
 # ---------------------------------------------------------------------------
 def op_ping(args: dict[str, Any], workdir: Path) -> int:
-    upstream = _upstream_dir()
+    upstream = _runtime_copy(workdir)
     entry = upstream / "Autovisor.py"
     if not entry.exists():
         return _fail(
@@ -242,7 +317,7 @@ def op_ping(args: dict[str, Any], workdir: Path) -> int:
 
 
 def op_check_browser(args: dict[str, Any], workdir: Path) -> int:
-    upstream = _upstream_dir()
+    upstream = _runtime_copy(workdir)
     python = sys.executable
     code, output, _ = _run_upstream(
         [python, str(upstream / "Autovisor.py"), "--check-browser"],
@@ -267,7 +342,7 @@ def op_check_course(args: dict[str, Any], workdir: Path) -> int:
     url = args.get("course_url") or args.get("url")
     if not url:
         return _fail(EXIT_INTERNAL, "INVALID_PARAM", hint="check_course 需要 --url")
-    upstream = _upstream_dir()
+    upstream = _runtime_copy(workdir)
     config_path = _write_config(workdir, url, speed=1.0, limit_min=0)
     code, output, _ = _run_upstream(
         [
@@ -326,7 +401,7 @@ def op_run_video(args: dict[str, Any], workdir: Path) -> int:
         )
         return EXIT_OK
 
-    upstream = _upstream_dir()
+    upstream = _runtime_copy(workdir)
     config_path = _write_config(
         workdir,
         url,

@@ -63,6 +63,54 @@ CHAOXING_DOMAIN_SUFFIXES = ZHS_DOMAIN_SUFFIXES
 SESSION_EXPIRES = -1
 
 
+def to_upstream_jar(cookies: Sequence[Any]) -> list[dict[str, Any]]:
+    """把内部 cookie 转成 Requests-CookieJar 风格（供 Autovisor `--import-cookies`）。
+
+    字段映射（内部 snake_case → 上游 camelCase）：
+        http_only → httpOnly
+        same_site → sameSite（上游只认 Strict/Lax/None，空值直接丢掉）
+
+    `expires <= 0` 是会话 cookie：**不带 expires 字段**交给上游按会话处理；
+    带了负数反而可能被上游当成"已过期"而拒收。
+    """
+    out: list[dict[str, Any]] = []
+    for c in cookies:
+        get = getattr(c, "name", None)
+        if get is not None:
+            # Cookie 对象
+            item: dict[str, Any] = {
+                "name": c.name,
+                "value": c.value,
+                "domain": c.domain,
+                "path": c.path or "/",
+                "secure": bool(c.secure),
+            }
+            expires = getattr(c, "expires", None)
+            http_only = getattr(c, "http_only", False)
+            same_site = getattr(c, "same_site", "") or ""
+        else:
+            raw = dict(c)
+            item = {
+                "name": raw.get("name", ""),
+                "value": raw.get("value", ""),
+                "domain": raw.get("domain", ""),
+                "path": raw.get("path") or "/",
+                "secure": bool(raw.get("secure", False)),
+            }
+            expires = raw.get("expires")
+            http_only = raw.get("http_only", raw.get("httpOnly", False))
+            same_site = raw.get("same_site", raw.get("sameSite", "")) or ""
+        if isinstance(expires, (int, float)) and expires > 0:
+            item["expires"] = float(expires)
+        if http_only:
+            item["httpOnly"] = True
+        if same_site in {"Strict", "Lax", "None"}:
+            item["sameSite"] = same_site
+        if item.get("name"):
+            out.append(item)
+    return out
+
+
 @dataclass
 class Cookie:
     name: str
@@ -408,6 +456,10 @@ class CookieStore:
     def header_path(self, account_id: str) -> Path:
         return self.workdir(account_id) / "cookies.header"
 
+    def upstream_jar_path(self, account_id: str) -> Path:
+        """给上游用的 Requests-CookieJar 风格文件（Autovisor `--import-cookies`）。"""
+        return self.workdir(account_id) / "cookies.upstream.json"
+
     def has(self, account_id: str) -> bool:
         return self.json_path(account_id).is_file()
 
@@ -448,6 +500,17 @@ class CookieStore:
         header_path.write_text(target.to_header(), encoding="utf-8")
         _restrict(header_path)
 
+        # 第四份：Requests-CookieJar 风格（Autovisor 的 --import-cookies 只认这个）。
+        # 我们内部用 snake_case，上游读 camelCase（httpOnly/sameSite）——
+        # 字段名对不上时上游会**静默丢弃**这些属性，cookie 看似导入成功
+        # 实际少了 HttpOnly/_sameSite，登录态可能莫名其妙失效。
+        upstream = to_upstream_jar(list(target))
+        upstream_path = self.upstream_jar_path(account_id)
+        upstream_path.write_text(
+            json.dumps(upstream, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        _restrict(upstream_path)
+
         return {
             "account_id": account_id,
             "kept": len(target),
@@ -456,6 +519,7 @@ class CookieStore:
                 "json": str(json_path),
                 "netscape": str(netscape_path),
                 "header": str(header_path),
+                "upstream_jar": str(upstream_path),
             },
             "diagnose": target.diagnose(),
         }

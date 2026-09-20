@@ -760,18 +760,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--show", action="store_true", help="显示配置与禁区（默认）")
     group.add_argument("--launch", action="store_true", help="启动独立实例")
-    group.add_argument(
-        "--minimized", action="store_true",
-        help="后台：最小化到任务栏。页面功能与正常窗口完全一致（不用 headless，"
-             "因为平台可能对无头浏览器做指纹检测）",
-    )
-    group.add_argument(
-        "--offscreen", action="store_true",
-        help="后台：移出屏幕。窗口真实存在但看不见；与 --minimized 同时给时优先生效",
-    )
     group.add_argument("--status", action="store_true", help="探测 CDP 是否在线")
     group.add_argument("--diagnose", action="store_true", help="全面体检（只读）")
     group.add_argument("--stop", action="store_true", help="显示如何停止（不执行）")
+    # 后台模式是 --launch 的**修饰符**，不是独立动作 —— 所以必须放在
+    # 互斥组之外，否则 `--launch --offscreen` 会被 argparse 拒绝。
+    bg = parser.add_mutually_exclusive_group()
+    bg.add_argument(
+        "--minimized", action="store_true",
+        help="配合 --launch：最小化到任务栏。页面功能与正常窗口完全一致（不用 "
+             "headless，因为平台可能对无头浏览器做指纹检测）",
+    )
+    bg.add_argument(
+        "--offscreen", action="store_true",
+        help="配合 --launch：移出屏幕。窗口真实存在但看不见；与 --minimized "
+             "同时给时本项优先",
+    )
     parser.add_argument("--json", action="store_true", help="以 JSON 输出（用于 --diagnose / --status）")
     args = parser.parse_args(list(argv) if argv is not None else None)
 
