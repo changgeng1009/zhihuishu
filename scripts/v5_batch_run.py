@@ -255,12 +255,9 @@ def play_one(page, task: dict, wait_answer_s: int, prev_dur: float | None,
     """
     loaded, v = _click_until_loaded(page, task, prev_dur)
     if not loaded:
-        # 播完的页面播放器会进错误态（点击只挪高亮不加载）。
-        # 恢复 = Page.reload 硬刷新后再试一轮（实测 reload 后点击稳定）。
-        print("    [warn] 点击不切换 → Page.reload 后重试", flush=True)
-        if _refresh_page(page):
-            loaded, v = _click_until_loaded(page, task, prev_dur)
-    if not loaded:
+        # 播完的页面播放器进错误态（点击只挪高亮不加载），
+        # 页内 reload 实测救不回来（还会连累渲染进程崩溃）——交给调用方整机重启。
+        print("    [warn] 点击不切换 → 需整机重启恢复", flush=True)
         stats["skipped"] += 1
         return "skip", v.get("dur") if v else prev_dur
 
@@ -369,6 +366,21 @@ def main() -> int:
         if not _wait_ready(page):
             return 1
 
+        def _relaunch() -> bool:
+            """整机重启浏览器并恢复会话（页内 reload 实测无效时的唯一可靠恢复）。"""
+            nonlocal proc, page
+            try:
+                page.__exit__()
+            except Exception:
+                pass
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+            time.sleep(3)
+            proc, page, cookie_target = _launch()
+            return _wait_ready(page)
+
         tasks = enumerate_tasks(page)
         done_now = [t for t in tasks if (t.get("pct") or 0) >= 100]
         print(f"[batch] 视频任务点 {len(tasks)} 个（平台进度>=100 的 {len(done_now)} 个）", flush=True)
@@ -400,7 +412,16 @@ def main() -> int:
                 print(f"[batch] 到达时限", flush=True)
                 break
             print(f"[batch] ({i+1}/{len(todo)}) {task['t'][:36]}（平台进度 {task.get('pct')}%）", flush=True)
-            r, prev_dur = play_one(page, task, args.wait_answer, prev_dur, stats)
+            try:
+                r, prev_dur = play_one(page, task, args.wait_answer, prev_dur, stats)
+            except (OSError, cdp_mod.CdpError) as e:
+                # 连接中断（渲染进程崩溃等）→ 整机重启后重试同一讲
+                print(f"    [warn] CDP 连接中断（{type(e).__name__}）→ 整机重启", flush=True)
+                relaunched_for = tid = task["id"]
+                if not _relaunch():
+                    _summary(stats)
+                    return 1
+                continue
             tid = task["id"]
             if r == "confirmed":
                 state[tid] = {"status": "confirmed", "at": time.strftime("%Y-%m-%dT%H:%M:%S")}
@@ -417,42 +438,26 @@ def main() -> int:
             print(f"[batch] ✓ {r}（确认 {stats['confirmed']} / 待确认 {stats['unconfirmed']}）",
                   flush=True)
             if r == "skip" and relaunched_for != tid:
-                # 页内恢复（reload/解卡）救不回来的卡死 → 整机重启浏览器
-                # （今日实测：全新启动后首点即成的概率远高于页内恢复）
+                # 页内恢复救不回来的卡死 → 整机重启浏览器重试同一讲
                 print("[batch] 整机重启浏览器后重试同一讲", flush=True)
                 relaunched_for = tid
-                try:
-                    page.__exit__()
-                except Exception:
-                    pass
-                try:
-                    proc.terminate()
-                except Exception:
-                    pass
-                time.sleep(3)
-                proc, page, cookie_target = _launch()
-                if not _wait_ready(page):
+                if not _relaunch():
                     _summary(stats)
                     return 1
                 continue                       # 重试同一讲（i 不前进）
             relaunched_for = None
-            if r in ("confirmed", "unconfirmed", "skip"):
-                # 主动换新页：播完的页面播放器已死，直接点下一讲必失败
-                if not _refresh_page(page):
-                    print("[batch] 页面刷新失败，整机重启", flush=True)
-                    try:
-                        page.__exit__()
-                    except Exception:
-                        pass
-                    try:
-                        proc.terminate()
-                    except Exception:
-                        pass
-                    time.sleep(3)
-                    proc, page, cookie_target = _launch()
-                    if not _wait_ready(page):
-                        _summary(stats)
-                        return 1
+            if r in ("confirmed", "unconfirmed"):
+                # 每讲播完整机重启：播完的页面播放器必然卡死（今日反复实证），
+                # 页内 reload 无效且可能拖崩渲染进程。约 40s 开销，可接受。
+                if not _relaunch():
+                    print("[batch] 整机重启失败，停止", flush=True)
+                    _summary(stats)
+                    return 1
+            elif r == "skip":
+                if not _relaunch():
+                    print("[batch] 整机重启失败，停止", flush=True)
+                    _summary(stats)
+                    return 1
             i += 1
         _summary(stats)
     finally:
