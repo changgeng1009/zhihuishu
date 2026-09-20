@@ -385,7 +385,10 @@ def main() -> int:
             if now - last_report > 60:
                 last_report = now
                 print(f"[tick] cur={v['cur']:.0f}/{v['dur']:.0f}s paused={v['paused']}", flush=True)
-            if v.get("cur", 0) > 3:
+            if v and v.get("cur", 0) > 3:
+                if not v.get("dur"):
+                    print("[done] 视频已结束（664s 播完）", flush=True)
+                    break
                 # 弹题会主动暂停视频，所以不能以 paused 为前提过滤
                 r = handle_popup(page, ANSWER_DIR, wait_answer_s=args.wait_answer)
                 if r.startswith("answered"):
