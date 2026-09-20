@@ -322,10 +322,39 @@ class CdpClient:
 # --------------------------------------------------------------------------
 
 
+_LOOPBACK_OPENER: urllib.request.OpenerDirector | None = None
+
+
+def loopback_opener() -> urllib.request.OpenerDirector:
+    """一个**不经过任何代理**的 opener，专供 127.0.0.1 使用。
+
+    为什么必须显式绕开代理：本机环境常设
+    `HTTP_PROXY=http://127.0.0.1:53612`（沙箱 / 公司网络 / 抓包工具），
+    而 `urllib.request.urlopen` **默认会把这条代理用在 127.0.0.1 的请求上**，
+    结果是本地 CDP 端点被劫持，返回误导性的 `502 Bad Gateway` 或超时。
+
+    排障时这个 502 极易被误读成"浏览器没起来"——实际浏览器活得好好的，
+    只是我们自己的请求走错了路。所以这里不靠 `NO_PROXY` 环境变量
+    （它是全局的、会被别处覆盖），而是在 opener 层按请求硬编码绕开。
+
+    机制说明：`ProxyHandler.__init__` 会按 proxies 映射**动态挂上**
+    `<scheme>_open` 方法；传入空映射时一个都不挂，请求即直连。
+    也因此这个 handler 不会出现在 `opener.handlers` 里（它没有可注册的方法）。
+
+    只用于回环地址；访问外部平台时仍走系统默认代理。
+    """
+    global _LOOPBACK_OPENER
+    if _LOOPBACK_OPENER is None:
+        _LOOPBACK_OPENER = urllib.request.build_opener(
+            urllib.request.ProxyHandler({})
+        )
+    return _LOOPBACK_OPENER
+
+
 def http_json(port: int, path: str, timeout_s: float = 5.0) -> Any:
     url = f"http://127.0.0.1:{port}{path}"
     try:
-        with urllib.request.urlopen(url, timeout=timeout_s) as response:
+        with loopback_opener().open(url, timeout=timeout_s) as response:
             return json.loads(response.read().decode("utf-8"))
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
         raise CdpError(f"无法访问 {url}：{type(exc).__name__}: {exc}") from exc

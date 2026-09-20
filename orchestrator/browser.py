@@ -290,11 +290,18 @@ class CdpStatus:
 
 
 def probe_cdp(port: int | None = None, timeout_s: float = 2.0) -> CdpStatus:
-    """探测 CDP 端点是否活着。只读，不启动任何东西。"""
+    """探测 CDP 端点是否活着。只读，不启动任何东西。
+
+    **必须绕过代理**：本机若设了 `HTTP_PROXY=http://127.0.0.1:xxxx`，
+    `urlopen` 会把回环请求也交给它，返回误导性的 502 / 超时，
+    让人误判成"浏览器没起来"。所以这里用 cdp 模块提供的无代理 opener。
+    """
+    from .cdp import loopback_opener  # 延迟导入，避免模块级循环依赖
+
     target_port = port if port is not None else debug_port()
     url = f"http://127.0.0.1:{target_port}/json/version"
     try:
-        with urllib.request.urlopen(url, timeout=timeout_s) as response:
+        with loopback_opener().open(url, timeout=timeout_s) as response:
             payload = json.loads(response.read().decode("utf-8"))
         return CdpStatus(
             alive=True,
