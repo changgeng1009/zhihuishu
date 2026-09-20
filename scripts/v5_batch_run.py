@@ -320,6 +320,21 @@ def play_one(page, task: dict, wait_answer_s: int, prev_dur: float | None,
     return "unconfirmed", v["dur"] if v else None
 
 
+def _wait_ready(page) -> bool:
+    """等课程页列表渲染完成。"""
+    for _ in range(30):
+        time.sleep(2)
+        d = page.eval(r"""JSON.stringify({url: location.href.slice(0,50),
+            n: document.querySelectorAll('.child-main').length})""", wait=False)
+        d = json.loads(d) if isinstance(d, str) else d
+        if "login.zhihuishu.com" in d.get("url", ""):
+            print(">> 会话失效，退出", flush=True); return False
+        if d.get("n", 0) > 50:
+            return True
+    print(">> 课程页超时", flush=True)
+    return False
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit-min", type=int, default=480)
@@ -328,35 +343,31 @@ def main() -> int:
     args = ap.parse_args()
 
     port = 9334
-    plan, proc = B.launch(background=None if args.visible else "offscreen")
-    dl = time.time() + 40
-    while time.time() < dl:
-        if B.probe_cdp(port).alive:
-            break
-        time.sleep(1)
-    print("[boot] 浏览器就绪 port=9334 防节流已加", flush=True)
+    bg = None if args.visible else "offscreen"
 
-    with _PageSession(port) as page:
+    def _launch():
+        plan, proc = B.launch(background=bg)
+        dl = time.time() + 40
+        while time.time() < dl:
+            if B.probe_cdp(port).alive:
+                break
+            time.sleep(1)
+        print("[boot] 浏览器就绪 port=9334 防节流已加", flush=True)
+        page = _PageSession(port)
+        page.__enter__()
         page.enable_page()
         jar = CookieStore(root=Path("accounts")).load("acc_01")
         target = [c.to_dict() for c in jar
                   if any(c.domain.lstrip(".").endswith(s) for s in ZHS_DOMAIN_SUFFIXES)]
         ok, _ = cdp_mod.set_all_cookies(port, target)
         print(f"[boot] cookie 恢复 {ok}/{len(target)}", flush=True)
-
         page.navigate(URL)
-        ready = False
-        for _ in range(30):
-            time.sleep(2)
-            d = page.eval(r"""JSON.stringify({url: location.href.slice(0,50),
-                n: document.querySelectorAll('.child-main').length})""", wait=False)
-            d = json.loads(d) if isinstance(d, str) else d
-            if "login.zhihuishu.com" in d.get("url", ""):
-                print(">> 会话失效，退出", flush=True); return 1
-            if d.get("n", 0) > 50:
-                ready = True; break
-        if not ready:
-            print(">> 课程页超时", flush=True); return 1
+        return proc, page, target
+
+    proc, page, cookie_target = _launch()
+    try:
+        if not _wait_ready(page):
+            return 1
 
         tasks = enumerate_tasks(page)
         done_now = [t for t in tasks if (t.get("pct") or 0) >= 100]
@@ -380,8 +391,11 @@ def main() -> int:
         print(f"[batch] 待跑 {len(todo)}（跳过已完成 {len(tasks)-len(todo)}）", flush=True)
 
         prev_dur: float | None = None
+        relaunched_for: str | None = None      # 本讲已整机重启重试过？
         t0 = time.time()
-        for i, task in enumerate(todo):
+        i = 0
+        while i < len(todo):
+            task = todo[i]
             if time.time() - t0 > args.limit_min * 60:
                 print(f"[batch] 到达时限", flush=True)
                 break
@@ -402,13 +416,50 @@ def main() -> int:
                 return 2
             print(f"[batch] ✓ {r}（确认 {stats['confirmed']} / 待确认 {stats['unconfirmed']}）",
                   flush=True)
+            if r == "skip" and relaunched_for != tid:
+                # 页内恢复（reload/解卡）救不回来的卡死 → 整机重启浏览器
+                # （今日实测：全新启动后首点即成的概率远高于页内恢复）
+                print("[batch] 整机重启浏览器后重试同一讲", flush=True)
+                relaunched_for = tid
+                try:
+                    page.__exit__()
+                except Exception:
+                    pass
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+                time.sleep(3)
+                proc, page, cookie_target = _launch()
+                if not _wait_ready(page):
+                    _summary(stats)
+                    return 1
+                continue                       # 重试同一讲（i 不前进）
+            relaunched_for = None
             if r in ("confirmed", "unconfirmed", "skip"):
                 # 主动换新页：播完的页面播放器已死，直接点下一讲必失败
                 if not _refresh_page(page):
-                    print("[batch] 页面刷新失败，停止（下次启动会重新拉起）", flush=True)
-                    _summary(stats)
-                    return 1
+                    print("[batch] 页面刷新失败，整机重启", flush=True)
+                    try:
+                        page.__exit__()
+                    except Exception:
+                        pass
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+                    time.sleep(3)
+                    proc, page, cookie_target = _launch()
+                    if not _wait_ready(page):
+                        _summary(stats)
+                        return 1
+            i += 1
         _summary(stats)
+    finally:
+        try:
+            page.__exit__()
+        except Exception:
+            pass
     return 0
 
 
