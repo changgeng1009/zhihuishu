@@ -318,6 +318,7 @@ def main() -> int:
 
         stats = {"confirmed": 0, "unconfirmed": 0, "skipped": 0, "failed": 0,
                  "quizzes_ok": 0, "quizzes_unverified": 0, "skipped_confirmed": 0}
+        prev_dur: float | None = None
         t0 = time.time()
         for i, task in enumerate(todo):
             if time.time() - t0 > args.limit_min * 60:
