@@ -177,8 +177,18 @@ def _hide_noise(page) -> None:
 
 
 def _refresh_page(page) -> bool:
-    """重新导航学习页并等列表渲染（播放器错误态的唯一可靠恢复手段）。"""
-    page.navigate(URL)
+    """硬刷新学习页并等列表渲染。
+
+    实测：Page.navigate 到相同 URL 不触发真正重载（SPA 原地不动，旧播放器
+    状态全保留）；Page.reload 才是有效恢复。首次加载后的点击偶发不加载
+    （时序未钉死），reload 后再点实测稳定。
+    """
+    client = getattr(page, "_client", None)
+    if client is not None:
+        client.call("Page.enable", {})
+        client.call("Page.reload", {"ignoreCache": True})
+    else:
+        page.navigate(URL)
     dl = time.time() + 40
     while time.time() < dl:
         time.sleep(2)
