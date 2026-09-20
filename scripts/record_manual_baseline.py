@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from orchestrator import browser as B
 from orchestrator.adapters.zhs_browser import _PageSession, build_page_config
 from orchestrator.adapters.zhs_js import BOOTSTRAP_JS, API_RECORDER_JS
-from orchestrator.cdp import set_all_cookies, probe_cdp
+from orchestrator.cdp import set_all_cookies
 from orchestrator.cookies import CookieStore, ZHS_DOMAIN_SUFFIXES
 
 URL = (
@@ -50,7 +50,7 @@ def main() -> int:
     args = ap.parse_args()
 
     # 1) 附着已运行实例；没有就提示
-    if not probe_cdp().alive:
+    if not B.probe_cdp().alive:
         print(">> 未检测到独立浏览器。请先双击项目根目录的「启动独立浏览器.cmd」，再运行本脚本。")
         return 1
     port = B.debug_port()
