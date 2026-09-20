@@ -204,6 +204,7 @@ def play_one(page, task: dict, wait_answer_s: int, prev_dur: float | None,
                 break
         if loaded:
             break
+        v = video_state(page) or {}   # 点击可能使 video 元素短暂消失
         print(f"    [warn] 第 {attempt+1} 次点击后视频未切换（dur={v.get('dur')}）", flush=True)
     if not loaded:
         stats["skipped"] += 1
