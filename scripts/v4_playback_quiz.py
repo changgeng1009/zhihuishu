@@ -44,6 +44,7 @@ from orchestrator import browser as B
 from orchestrator import cdp as cdp_mod
 from orchestrator.adapters.zhs_browser import _PageSession
 from orchestrator.cookies import CookieStore, ZHS_DOMAIN_SUFFIXES
+from orchestrator import ticket_store as ts_module
 
 URL = (
     "https://studywisdomh5.zhihuishu.com/study/index"
@@ -184,36 +185,60 @@ def set_speed_via_ui(page) -> str:
     })())""", wait=False)
     trig = json.loads(trig) if isinstance(trig, str) else trig
     if not trig:
-        return "未找到倍率触发器 X 1.0"
+        return "未找到倍率触发器（当前倍率标签）"
     mouse("mouseMoved", trig["x"], trig["y"])
-    time.sleep(1.5)          # 纯悬浮等菜单展开（点击反而会收起）
-    item = page.eval(r"""JSON.stringify((() => {
-      const v = document.querySelector('video').getBoundingClientRect();
-      for (const el of document.querySelectorAll('span,div,li')) {
-        if (el.children.length) continue;
-        const t = (el.textContent||'').replace(/\s+/g,'').toUpperCase();
-        if (!/^X?1\.5X?$/.test(t)) continue;
-        const r = el.getBoundingClientRect();
-        if (r.width < 5 || r.x < v.x - 30 || r.x > v.x + v.width + 30) continue;
-        if (r.y < v.y - 30 || r.y > v.y + v.height + 30) continue;
-        return {x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2)};
-      }
-      return null;
-    })())""", wait=False)
-    item = json.loads(item) if isinstance(item, str) else item
+    # 条件等待：菜单项一出现就继续（实测多在 0.5s 内；上限 3s）。
+    # 不再固定睡 1.5s —— 菜单展开快时白等，慢时不够。
+    item = None
+    menu_deadline = time.time() + 3.0
+    while time.time() < menu_deadline and item is None:
+        time.sleep(0.25)
+        got = page.eval(r"""JSON.stringify((() => {
+          const v = document.querySelector('video').getBoundingClientRect();
+          for (const el of document.querySelectorAll('span,div,li')) {
+            if (el.children.length) continue;
+            const t = (el.textContent||'').replace(/\s+/g,'').toUpperCase();
+            if (!/^X?1\.5X?$/.test(t)) continue;
+            const r = el.getBoundingClientRect();
+            if (r.width < 5 || r.x < v.x - 30 || r.x > v.x + v.width + 30) continue;
+            if (r.y < v.y - 30 || r.y > v.y + v.height + 30) continue;
+            return {x: Math.round(r.x + r.width/2), y: Math.round(r.y + r.height/2)};
+          }
+          return null;
+        })())""", wait=False)
+        item = json.loads(got) if isinstance(got, str) else got
     if not item:
         return "悬浮后菜单未展开"
     mouse("mouseMoved", item["x"], item["y"]); time.sleep(0.5)
     mouse("mousePressed", item["x"], item["y"], True); time.sleep(0.05)
-    mouse("mouseReleased", item["x"], item["y"]); time.sleep(2)
-    v = video_state(page) or {}
-    return f"1.5x 结果: rate={v.get('rate')}"
+    mouse("mouseReleased", item["x"], item["y"])
+    # 条件等待：playbackRate 真变 1.5 才算生效（点击成功 ≠ 生效）
+    rate = None
+    rate_deadline = time.time() + 3.0
+    while time.time() < rate_deadline:
+        time.sleep(0.5)
+        v = video_state(page) or {}
+        rate = v.get("rate")
+        if rate == 1.5:
+            break
+    return f"1.5x 结果: rate={rate}"
 
 
-def handle_popup(page, ticket_dir: Path, wait_answer_s: float = 300.0) -> str:
-    """提取弹题 → 写工单 → 等 Agent 答案 → 真实点击提交。"""
-    # 已提交过的题会以「已提交」态重弹（平台记忆），直接关面板恢复播放
-    done = page.eval(r"""JSON.stringify((() => {
+def handle_popup(page, ticket_dir: Path, wait_answer_s: float = 300.0,
+                 course_id: str = "", chapter_id: str = "") -> dict:
+    """弹题处理：提取 → 工单(ticket_store) → 作答 → 真实点击 → 提交核验。
+
+    返回结构化状态（消费方禁止再对字符串做 split 猜测）：
+      {"status": "answered" | "already_submitted" | "no_popup" | "timeout",
+       "detail": str, "verified": bool}
+    verified=False 表示点了提交但未在页面上确认「已提交」—— 计数时
+    不得计入成功，只计入待确认。
+    """
+    def result(status: str, detail: str = "", verified: bool = False) -> dict:
+        return {"status": status, "detail": detail, "verified": verified}
+
+    # ── 0) 已提交过的题重弹（平台记忆）：关面板恢复播放 ──
+    done = page.eval(r"""/*DONE_CHECK*/JSON.stringify((() => {
       const w = document.querySelector('.ai-test-question-wrapper');
       if (!w) return false;
       for (const el of w.querySelectorAll('[class*=done], .btn')) {
@@ -223,114 +248,147 @@ def handle_popup(page, ticket_dir: Path, wait_answer_s: float = 300.0) -> str:
       return false;
     })())""", wait=False)
     if done is True or done == "true":
-        page.eval(r"""(()=>{const w=document.querySelector('.ai-test-question-wrapper');
-          if (!w) return; for (const el of w.querySelectorAll('[class*=close]')) {
-            const r = el.getBoundingClientRect();
-            if (r.width > 6 && r.width < 50) {
-              el.dispatchEvent(new MouseEvent('click', {bubbles:true}));
-            } } })()""", wait=False)
-        time.sleep(1.5)
+        _close_quiz_panel(page)
         v = video_state(page)
         if v and v.get("paused"):
             page.eval("document.querySelector('video').play()", wait=False)
         print("[quiz] 已提交过的题重弹 → 关面板恢复播放", flush=True)
-        return "answered(already)"
+        return result("already_submitted", "平台记忆已答，重弹直接关闭", verified=True)
 
-    raw = page.eval(POPUP_JS, wait=False)
+    # ── 1) 提取题面 ──
+    raw = page.eval("/*POPUP_JS*/" + POPUP_JS, wait=False)
     popup = json.loads(raw) if isinstance(raw, str) else raw
     if not popup:
-        return "no_popup"
-    text = popup.get("text", "")
+        return result("no_popup")
+    text = str(popup.get("text", ""))
 
-    qtype = ("judge" if ("判断题" in text or "正确" in text or re.search(r"^\s*A\s*[.、]?\s*对", text, re.M))
+    qtype = ("judge" if ("判断题" in text or re.search(r"^\s*A\s*[.、]?\s*对", text, re.M))
              else "single")
-    raw_opts = page.eval(OPTIONS_JS, wait=False)
+    raw_opts = page.eval("/*OPTIONS_JS*/" + OPTIONS_JS, wait=False)
     opts = json.loads(raw_opts) if isinstance(raw_opts, str) else (raw_opts or [])
-    # 去重（同字母同文本）
     seen, options = set(), []
     for o in opts:
         key = (o["letter"], o["text"])
         if key in seen:
             continue
         seen.add(key)
-        options.append(o)
+        options.append({"letter": o["letter"], "text": o["text"],
+                        "x": o["x"], "y": o["y"]})
 
-    ticket_id = time.strftime("%H%M%S")
-    ticket = {
-        "id": ticket_id, "qtype": qtype,
-        "question": text[:800], "options": options,
-        "captured_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-    }
-    ticket_dir.mkdir(parents=True, exist_ok=True)
-    pending = ticket_dir / f"pending_{ticket_id}.json"
-    answer_file = ticket_dir / f"answer_{ticket_id}.json"
-    pending.write_text(json.dumps(ticket, ensure_ascii=False, indent=2), encoding="utf-8")
+    stem = text
+    dedupe = ts_module.dedupe_key(stem)
+    ticket = ts_module.build_ticket(
+        raw_prompt=text[:800],
+        questions=[{"index": 1, "stem": text[:400], "type": qtype,
+                    "options": [{"letter": o["letter"], "text": o["text"]} for o in options]}],
+        dedupe=dedupe, course_id=course_id, chapter_id=chapter_id,
+        timeout_s=float(wait_answer_s),
+    )
+
+    def submit_and_verify() -> bool:
+        raw_sub = page.eval("/*SUBMIT_JS*/" + SUBMIT_JS, wait=False)
+        sub = json.loads(raw_sub) if isinstance(raw_sub, str) else raw_sub
+        if not sub:
+            return False
+        click(page, sub["x"], sub["y"])
+        print("[quiz] 已点提交作答", flush=True)
+        deadline = time.time() + 10.0
+        while time.time() < deadline:            # 提交后必须在页面上见到「已提交」
+            done = page.eval(r"""/*DONE_CHECK*/JSON.stringify((() => {
+              const w = document.querySelector('.ai-test-question-wrapper');
+              if (!w) return false;
+              for (const el of w.querySelectorAll('[class*=done], .btn')) {
+                const r = el.getBoundingClientRect();
+                if (r.width > 5 && (el.textContent||'').replace(/\s+/g,'') === '已提交') return true;
+              }
+              return false;
+            })())""", wait=False)
+            if done is True or done == "true":
+                return True
+            time.sleep(1.0)
+        return False
+
+    def click_letters(letters: list[str]) -> int:
+        n = 0
+        for letter in letters:
+            opt = next((o for o in options if o["letter"] == letter), None)
+            if not opt:
+                print(f"[quiz] 选项 {letter} 未定位到坐标", flush=True)
+                continue
+            click(page, opt["x"], opt["y"])
+            n += 1
+            print(f"[quiz] 已点 {letter} ({opt['text'][:20]})", flush=True)
+            time.sleep(0.5)
+        return n
+
+    def resume() -> None:
+        close = page.eval(r"""JSON.stringify((() => {
+          const vis = (el) => { const r = el.getClientRects(); return r.length > 0; };
+          for (const el of document.querySelectorAll('[class*=close], .el-dialog__headerbtn, button')) {
+            if (!vis(el)) continue;
+            const r = el.getBoundingClientRect();
+            if (r.width > 8 && r.width < 60 && r.height > 8 && r.height < 60) {
+              return {x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2)};
+            }
+          }
+          return null;
+        })())""", wait=False)
+        close = json.loads(close) if isinstance(close, str) else close
+        if close:
+            click(page, close["x"], close["y"])
+            time.sleep(1.2)
+        v = video_state(page)
+        if v and v.get("paused"):
+            page.eval("document.querySelector('video').play()", wait=False)
+
+    # ── 2) 去重命中：同题历史答案直接回放，不打扰 Agent ──
+    known = ts_module.known_answer(ticket_dir, dedupe)
+    if known:
+        n = click_letters(known)
+        verified = submit_and_verify() if n else False
+        ts_module.record_answered(ticket_dir, ticket, known)
+        resume()
+        print(f"[quiz] 去重命中 → 重放答案 {known} | 提交核验={verified}", flush=True)
+        return result("answered", f"auto(dedupe) {known}", verified=verified)
+
+    # ── 3) 新题：原子写工单，等 Agent（看门狗会叫醒它） ──
+    pending = ts_module.save_pending(ticket_dir, ticket)
     print(f"[quiz] 工单已写 {pending.name} | {len(options)} 个选项", flush=True)
-
-    # 等 Agent 作答；超时 → 暂停转人工（铁律）
     deadline = time.time() + wait_answer_s
-    ans = None
+    letters: list[str] | None = None
     while time.time() < deadline:
-        if answer_file.is_file():
-            try:
-                ans = json.loads(answer_file.read_text(encoding="utf-8"))
-                break
-            except Exception:
-                pass
+        letters = ts_module.load_answer(ticket_dir, ticket.ticket_id)
+        if letters:
+            break
         time.sleep(2)
-    if ans is None:
+    if not letters:
         v = video_state(page)
         if v and not v.get("paused"):
             page.eval("document.querySelector('video').pause()", wait=False)
-        pending.rename(ticket_dir / f"timeout_{ticket_id}.json")
+        ts_module.mark_timeout(ticket_dir, ticket)
         print(f"[quiz] {wait_answer_s}s 未获答案 → 已暂停视频，转人工", flush=True)
-        return "timeout"
+        return result("timeout", f"{wait_answer_s}s 未获答案")
 
-    letters = [a.strip().upper() for a in re.split(r"[,\s，、]+", str(ans.get("answer", ""))) if a.strip()]
     print(f"[quiz] Agent 答案: {letters}", flush=True)
+    n = click_letters(letters)
+    verified = submit_and_verify() if n else False
+    if verified:
+        ts_module.record_answered(ticket_dir, ticket, letters)
+    resume()
+    if not verified:
+        # 不计入成功：证据不足只记待确认（工单保持 pending 供人工复核）
+        print("[quiz] 提交后未见「已提交」→ 记待确认（不计成功）", flush=True)
+        return result("answered", f"{letters}（提交未确认）", verified=False)
+    return result("answered", str(letters), verified=True)
 
-    # 逐个点选项（真实鼠标）
-    for letter in letters:
-        opt = next((o for o in options if o["letter"] == letter), None)
-        if not opt:
-            print(f"[quiz] 选项 {letter} 未定位到坐标", flush=True)
-            continue
-        click(page, opt["x"], opt["y"])
-        time.sleep(0.6)
-        print(f"[quiz] 已点 {letter} ({opt['text'][:20]})", flush=True)
 
-    # 提交
-    raw_sub = page.eval(SUBMIT_JS, wait=False)
-    sub = json.loads(raw_sub) if isinstance(raw_sub, str) else raw_sub
-    if sub:
-        click(page, sub["x"], sub["y"])
-        print("[quiz] 已点提交作答", flush=True)
-        time.sleep(3)
-
-    # 关闭可能残留的弹窗（右上角 X）
-    close = page.eval(r"""JSON.stringify((() => {
-      const vis = (el) => { const r = el.getClientRects(); return r.length > 0; };
-      for (const el of document.querySelectorAll('[class*=close], .el-dialog__headerbtn, button')) {
-        if (!vis(el)) continue;
+def _close_quiz_panel(page) -> None:
+    page.eval(r"""(()=>{const w=document.querySelector('.ai-test-question-wrapper');
+      if (!w) return; for (const el of w.querySelectorAll('[class*=close]')) {
         const r = el.getBoundingClientRect();
-        if (r.width > 8 && r.width < 60 && r.height > 8 && r.height < 60) {
-          return {x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2)};
-        }
-      }
-      return null;
-    })())""", wait=False)
-    close = json.loads(close) if isinstance(close, str) else close
-    if close:
-        click(page, close["x"], close["y"])
-        time.sleep(1.5)
-
-    # 恢复播放
-    v = video_state(page)
-    if v and v.get("paused"):
-        page.eval("document.querySelector('video').play()", wait=False)
-        time.sleep(1)
-    pending.rename(ticket_dir / f"done_{ticket_id}.json")
-    return f"answered {letters}"
+        if (r.width > 6 && r.width < 50) {
+          el.dispatchEvent(new MouseEvent('click', {bubbles:true}));
+        } } })()""", wait=False)
 
 
 def main() -> int:
@@ -415,10 +473,11 @@ def main() -> int:
                     break
                 # 弹题会主动暂停视频，所以不能以 paused 为前提过滤
                 r = handle_popup(page, ANSWER_DIR, wait_answer_s=args.wait_answer)
-                if r.startswith("answered"):
-                    handled += 1
-                    print(f"[quiz] 第 {handled} 题处理完成", flush=True)
-                elif r == "timeout":
+                if r["status"] in ("answered", "already_submitted"):
+                    handled += 1 if r["verified"] else 0
+                    tag = "✓" if r["verified"] else "待确认"
+                    print(f"[quiz] 第 {handled} 题处理完成 [{tag}] {r['detail']}", flush=True)
+                elif r["status"] == "timeout":
                     print("[quiz] 超时转人工，脚本退出", flush=True)
                     return 2
         print(f"[done] {args.limit_min} 分钟到，共处理 {handled} 题暂停", flush=True)
