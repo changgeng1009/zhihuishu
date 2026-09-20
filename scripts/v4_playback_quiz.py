@@ -32,6 +32,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+# 独立端口 + 独立 profile：不与用户手动用的主实例（9333）互相干扰。
+# 必须在 import orchestrator.browser 之前设置（debug_port/profile_dir 读环境变量）。
+import os
+
+os.environ.setdefault("ORCH_EDGE_DEBUG_PORT", "9334")
+os.environ.setdefault(
+    "ORCH_EDGE_PROFILE", r"D:\CodexWork\智慧树刷课\accounts\quiz_profile")
+
 from orchestrator import browser as B
 from orchestrator import cdp as cdp_mod
 from orchestrator.adapters.zhs_browser import _PageSession
