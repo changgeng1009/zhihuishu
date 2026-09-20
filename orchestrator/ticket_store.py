@@ -48,6 +48,11 @@ def _atomic_write(path: Path, data: str) -> None:
     os.replace(tmp, path)          # 同盘原子替换
 
 
+def atomic_write(path: Path, data: str) -> None:
+    """公开原子写入口（断点状态等外部持久化共用同一实现）。"""
+    _atomic_write(path, data)
+
+
 def dedupe_key(stem: str) -> str:
     """归一化题干 → 稳定去重键。去空白/中英标点差异/题型前缀。"""
     norm = re.sub(r"[\s，。、；：？！“”‘’（）《》\[\]【】,.:;?!\"'()<>\[\]]", "", stem)

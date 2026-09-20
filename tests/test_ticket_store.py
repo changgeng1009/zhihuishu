@@ -111,3 +111,13 @@ class TestAnswerFlow(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAtomicWritePublic(unittest.TestCase):
+    def test_public_atomic_write(self):
+        """v5 断点状态依赖的公开原子写入口（曾因缺此名崩在首轮 _save_state）。"""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "batch_state.json"
+            ts.atomic_write(p, json.dumps({"done": ["x"]}, ensure_ascii=False))
+            self.assertEqual(json.loads(p.read_text(encoding="utf-8")), {"done": ["x"]})
+            self.assertFalse(p.with_suffix(".json.tmp").exists())   # 无残留 tmp
