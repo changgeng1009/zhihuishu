@@ -168,6 +168,14 @@ def _verify_task_done(page, title_key: str, wait_s: float = 10.0) -> bool | None
     return None
 
 
+def _hide_noise(page) -> None:
+    """隐藏「课程提醒」「学前必读」等遮挡弹窗（只 display:none 不点击，
+    避开 btn01 滑块验证码坑）。弹窗渲染比列表慢，需在点击前反复执行。"""
+    page.eval(r"""(()=>{for (const sel of ['.el-dialog__wrapper','.el-overlay','.el-dialog']) {
+      for (const el of document.querySelectorAll(sel)) el.style.display = 'none';
+    }})()""", wait=False)
+
+
 def _refresh_page(page) -> bool:
     """重新导航学习页并等列表渲染（播放器错误态的唯一可靠恢复手段）。"""
     page.navigate(URL)
@@ -181,6 +189,9 @@ def _refresh_page(page) -> bool:
         except Exception:
             d = {}
         if isinstance(d, dict) and d.get("n", 0) > 50 and "login" not in d.get("url", ""):
+            _hide_noise(page)          # 弹窗此刻可能才刚渲染
+            time.sleep(1)
+            _hide_noise(page)
             return True
     return False
 
@@ -202,6 +213,7 @@ def play_one(page, task: dict, wait_answer_s: int, prev_dur: float | None,
     v = video_state(page) or {}
     loaded = False
     for attempt in range(3):
+        _hide_noise(page)              # 点击前隐藏遮挡层（挡点击的真凶）
         coords = _task_coords(page, title_key)
         if not coords:
             time.sleep(2)
@@ -229,6 +241,7 @@ def play_one(page, task: dict, wait_answer_s: int, prev_dur: float | None,
         print("    [warn] 点击不切换 → 重新导航恢复播放器后重试", flush=True)
         if _refresh_page(page):
             for attempt in range(3):
+                _hide_noise(page)
                 coords = _task_coords(page, title_key)
                 if not coords:
                     time.sleep(2)
