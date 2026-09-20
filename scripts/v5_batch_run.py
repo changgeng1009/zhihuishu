@@ -168,6 +168,23 @@ def _verify_task_done(page, title_key: str, wait_s: float = 10.0) -> bool | None
     return None
 
 
+def _refresh_page(page) -> bool:
+    """重新导航学习页并等列表渲染（播放器错误态的唯一可靠恢复手段）。"""
+    page.navigate(URL)
+    dl = time.time() + 40
+    while time.time() < dl:
+        time.sleep(2)
+        d = page.eval("JSON.stringify({url: location.href, n: document.querySelectorAll('.child-info.hasvideo').length})",
+                      wait=False)
+        try:
+            d = json.loads(d) if isinstance(d, str) else d
+        except Exception:
+            d = {}
+        if isinstance(d, dict) and d.get("n", 0) > 50 and "login" not in d.get("url", ""):
+            return True
+    return False
+
+
 def play_one(page, task: dict, wait_answer_s: int, prev_dur: float | None,
              stats: dict) -> tuple[str, float | None]:
     """播一个任务点到结束。返回 (ok/timeout/skip, 当前视频时长)。
@@ -207,8 +224,32 @@ def play_one(page, task: dict, wait_answer_s: int, prev_dur: float | None,
         v = video_state(page) or {}   # 点击可能使 video 元素短暂消失
         print(f"    [warn] 第 {attempt+1} 次点击后视频未切换（dur={v.get('dur')}）", flush=True)
     if not loaded:
-        stats["skipped"] += 1
-        return "skip", v.get("dur") if v else prev_dur
+        # 播放器在上一讲播完后会进入错误态（「Sorry 您可能需要下载」），
+        # 此时列表点击只挪高亮不加载视频。实测唯一可靠恢复 = 重新导航学习页。
+        print("    [warn] 点击不切换 → 重新导航恢复播放器后重试", flush=True)
+        if _refresh_page(page):
+            for attempt in range(3):
+                coords = _task_coords(page, title_key)
+                if not coords:
+                    time.sleep(2)
+                    continue
+                click(page, coords["x"], coords["y"])
+                for _ in range(20):
+                    time.sleep(2)
+                    v = video_state(page)
+                    if v and v.get("dur"):
+                        dur, cur = v.get("dur"), v.get("cur", 0)
+                        if expected and abs(dur - expected) < 6:
+                            loaded = True
+                            break
+                        if not expected and (prev_dur is None or abs(dur - prev_dur) > 6 or cur < 30):
+                            loaded = True
+                            break
+                if loaded:
+                    break
+        if not loaded:
+            stats["skipped"] += 1
+            return "skip", v.get("dur") if v else prev_dur
 
     page.eval("document.querySelector('video').muted = true", wait=False)
     print(f"    [play] dur={v['dur']:.0f}s cur={v['cur']:.0f}s（已静音）", flush=True)
@@ -307,6 +348,8 @@ def main() -> int:
 
         tasks = enumerate_tasks(page)
         print(f"[batch] 视频任务点 {len(tasks)} 个", flush=True)
+        stats = {"confirmed": 0, "unconfirmed": 0, "skipped": 0, "failed": 0,
+                 "quizzes_ok": 0, "quizzes_unverified": 0, "skipped_confirmed": 0}
         state_path = Path("runs/batch_state.json")
         state = _load_state(state_path)
         # 断点：只跳过有平台证据的 confirmed；待确认/跳过/失败都重跑
@@ -320,8 +363,6 @@ def main() -> int:
             todo.append(task)
         print(f"[batch] 待跑 {len(todo)}（跳过已确认 {len(tasks)-len(todo)}）", flush=True)
 
-        stats = {"confirmed": 0, "unconfirmed": 0, "skipped": 0, "failed": 0,
-                 "quizzes_ok": 0, "quizzes_unverified": 0, "skipped_confirmed": 0}
         prev_dur: float | None = None
         t0 = time.time()
         for i, task in enumerate(todo):
@@ -345,6 +386,12 @@ def main() -> int:
                 return 2
             print(f"[batch] ✓ {r}（确认 {stats['confirmed']} / 待确认 {stats['unconfirmed']}）",
                   flush=True)
+            if r in ("confirmed", "unconfirmed", "skip"):
+                # 主动换新页：播完的页面播放器已死，直接点下一讲必失败
+                if not _refresh_page(page):
+                    print("[batch] 页面刷新失败，停止（下次启动会重新拉起）", flush=True)
+                    _summary(stats)
+                    return 1
         _summary(stats)
     return 0
 
